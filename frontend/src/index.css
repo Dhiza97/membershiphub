@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+@theme {
+	--color-hub-purple: #94007e;
+	--color-hub-purple-dark: #720061;
+	--color-hub-ink: #090909;
+	--color-hub-paper: #fffeff;
+	--color-hub-yellow: #ffce0b;
+	--color-hub-line: #e6e2e7;
+	--color-hub-muted: #716b73;
+	--font-sans: "Aptos", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+	color: #090909;
+	background: #f5f3f6;
+	font-family: "Aptos", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+	font-synthesis: none;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	font-optical-sizing: auto;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	min-width: 320px;
+	min-height: 100vh;
+	margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+}
+
+button {
+	cursor: pointer;
+}
+
+.status-lamp {
+	display: inline-block;
+	width: 7px;
+	height: 7px;
+	flex: 0 0 auto;
+	border-radius: 9999px;
+	background: currentColor;
+}
+
+.status-lamp-live {
+	animation: status-pulse 1.8s ease-out infinite;
+}
+
+@keyframes status-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
+}
+
+::selection {
+	color: #fffeff;
+	background: #94007e;
+}
+
+:focus-visible {
+	outline: 3px solid #ffce0b;
+	outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		scroll-behavior: auto !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}

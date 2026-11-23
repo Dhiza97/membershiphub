@@ -237,3 +237,17 @@ No product-specific accessibility standard or mandatory localized language is co
 The Create Cohort interface should support keyboard navigation, visible focus indicators, reduced motion, responsive layouts, and clear validation feedback.
 
 The user will determine whether a formal accessibility standard or additional localization requirements are necessary.
+
+## Colors
+Primary color: #94007e
+Secondary: #090909 & #fffeff
+others: #ffce0b
+
+## Curriculum Ownership and History
+
+- Curricula are branch-owned and created from scratch by Branch Admins within their assigned branch; there is no organization-wide baseline in the initial implementation.
+- A curriculum contains ordered topics, learning objectives, lessons, branch notes, and external-link learning materials.
+- Editing a published curriculum begins a new draft version cloned from the latest published version. Published versions are immutable.
+- Cohorts may use only a published curriculum version from their own branch.
+- Marking a cohort Ready captures a curriculum snapshot. Subsequent curriculum edits or versions must not change that cohort's requirements or its historical curriculum record.
+- Learning materials are external URLs in the initial implementation; file uploads are not included.
