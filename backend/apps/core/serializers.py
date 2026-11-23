@@ -1,3 +1,4 @@
+from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import transaction
@@ -17,6 +18,13 @@ from .models import (
     LearningMaterial,
     Session,
     Attendance,
+    Assessment,
+    AssessmentAnswer,
+    AssessmentAttempt,
+    AssessmentQuestion,
+    Question,
+    QuestionBank,
+    QuestionOption,
 )
 
 
@@ -592,3 +600,373 @@ class AttendanceUpdateSerializer(serializers.ModelSerializer):
         if self.instance.session.status == Session.Status.CANCELLED:
             raise serializers.ValidationError({"session": "Attendance for cancelled sessions is locked."})
         return attrs
+
+
+class QuestionOptionInputSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuestionOption
+        fields = ("id", "text", "position", "is_correct")
+        read_only_fields = ("id",)
+
+
+class QuestionBankQuestionSerializer(serializers.ModelSerializer):
+    options = QuestionOptionInputSerializer(many=True)
+    branch = serializers.IntegerField(source="bank.branch_id", read_only=True)
+
+    class Meta:
+        model = Question
+        fields = (
+            "id",
+            "branch",
+            "question_type",
+            "prompt",
+            "explanation",
+            "options",
+            "is_active",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "branch", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        question_type = attrs.get("question_type", self.instance.question_type if self.instance else Question.Type.SINGLE)
+        options = attrs.get("options")
+        if options is None and self.instance is not None:
+            options = [
+                {"text": option.text, "is_correct": option.is_correct, "position": option.position}
+                for option in QuestionOption.objects.filter(question=self.instance)
+            ]
+        if options is None or len(options) < 2:
+            raise serializers.ValidationError({"options": "A multiple-choice question needs at least two answer options."})
+        if any(not option["text"].strip() for option in options):
+            raise serializers.ValidationError({"options": "Answer option text cannot be blank."})
+        correct_count = sum(bool(option.get("is_correct", False)) for option in options)
+        if question_type == Question.Type.SINGLE and correct_count != 1:
+            raise serializers.ValidationError({"options": "Single-answer questions need exactly one correct option."})
+        if question_type == Question.Type.MULTIPLE and correct_count < 1:
+            raise serializers.ValidationError({"options": "Select at least one correct option."})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        options = validated_data.pop("options")
+        question = Question.objects.create(
+            bank=self.context["bank"],
+            created_by=self.context["request"].user,
+            **validated_data,
+        )
+        self._replace_options(question, options)
+        return question
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        options = validated_data.pop("options", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if options is not None:
+            self._replace_options(instance, options)
+        return instance
+
+    def _replace_options(self, question, options):
+        QuestionOption.objects.filter(question=question).delete()
+        for position, option in enumerate(options):
+            option.pop("id", None)
+            option["position"] = position
+            QuestionOption.objects.create(question=question, **option)
+
+
+class AssessmentQuestionInputSerializer(serializers.Serializer):
+    question = serializers.PrimaryKeyRelatedField(queryset=Question.objects.filter(is_active=True))
+    points = serializers.DecimalField(max_digits=7, decimal_places=2, min_value=Decimal("0.01"), default=Decimal("1.00"))
+    position = serializers.IntegerField(min_value=0, required=False)
+    time_limit_seconds = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+
+
+class AssessmentQuestionAdminSerializer(serializers.ModelSerializer):
+    prompt = serializers.SerializerMethodField()
+    question_type = serializers.SerializerMethodField()
+    options = serializers.SerializerMethodField()
+    correct_option_ids = serializers.SerializerMethodField()
+    explanation = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AssessmentQuestion
+        fields = (
+            "id",
+            "question",
+            "prompt",
+            "question_type",
+            "options",
+            "correct_option_ids",
+            "explanation",
+            "points",
+            "position",
+            "time_limit_seconds",
+        )
+
+    def get_prompt(self, obj):
+        return obj.prompt_snapshot or obj.question.prompt
+
+    def get_question_type(self, obj):
+        return obj.question_type_snapshot or obj.question.question_type
+
+    def get_options(self, obj):
+        if obj.prompt_snapshot:
+            return obj.options_snapshot
+        return [
+            {"id": option.pk, "text": option.text}
+            for option in QuestionOption.objects.filter(question=obj.question)
+        ]
+
+    def get_correct_option_ids(self, obj):
+        if obj.prompt_snapshot:
+            return obj.correct_option_ids_snapshot
+        return list(QuestionOption.objects.filter(question=obj.question, is_correct=True).values_list("id", flat=True))
+
+    def get_explanation(self, obj):
+        return obj.explanation_snapshot if obj.prompt_snapshot else obj.question.explanation
+
+
+class AssessmentSerializer(serializers.ModelSerializer):
+    questions = AssessmentQuestionInputSerializer(many=True, required=False, write_only=True)
+    question_details = AssessmentQuestionAdminSerializer(source="assessment_questions", many=True, read_only=True)
+    cohort_name = serializers.CharField(source="cohort.name", read_only=True)
+    curriculum_topic_title = serializers.CharField(source="curriculum_topic.title", read_only=True)
+    attempt_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Assessment
+        fields = (
+            "id",
+            "branch",
+            "cohort",
+            "cohort_name",
+            "curriculum_topic",
+            "curriculum_topic_title",
+            "title",
+            "description",
+            "assessment_type",
+            "status",
+            "timing_mode",
+            "duration_seconds",
+            "attempt_limit",
+            "deadline_at",
+            "results_released",
+            "questions",
+            "question_details",
+            "attempt_count",
+            "published_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "branch",
+            "cohort_name",
+            "curriculum_topic_title",
+            "status",
+            "results_released",
+            "question_details",
+            "attempt_count",
+            "published_at",
+            "created_at",
+            "updated_at",
+        )
+
+    def get_attempt_count(self, obj):
+        return AssessmentAttempt.objects.filter(assessment=obj).count()
+
+    def validate(self, attrs):
+        actor = self.context["request"].user
+        cohort = attrs.get("cohort", self.instance.cohort if self.instance else None)
+        topic = attrs.get("curriculum_topic", self.instance.curriculum_topic if self.instance else None)
+        branch = cohort.branch if cohort else topic.version.curriculum.branch if topic else None
+        if (cohort is None) == (topic is None):
+            raise serializers.ValidationError({"cohort": "Choose exactly one cohort or curriculum topic."})
+        if branch is None:
+            raise serializers.ValidationError({"cohort": "Assessment needs a valid cohort or curriculum topic."})
+        if actor.is_branch_admin() and actor.branch_id != branch.pk:
+            raise serializers.ValidationError("Branch Admins can only manage assessments in their branch.")
+        if actor.application_role == User.ApplicationRole.INSTRUCTOR:
+            if actor.branch_id != branch.pk:
+                raise serializers.ValidationError("Instructors can only manage assessments in their branch.")
+            if cohort is None or cohort.instructor_id != actor.pk:
+                raise serializers.ValidationError("Instructors can only manage assessments in their assigned cohorts.")
+        if self.instance and self.instance.status != Assessment.Status.DRAFT:
+            raise serializers.ValidationError("Published assessments are immutable.")
+
+        timing_mode = attrs.get("timing_mode", self.instance.timing_mode if self.instance else Assessment.TimingMode.WHOLE)
+        duration = attrs.get("duration_seconds", self.instance.duration_seconds if self.instance else None)
+        if timing_mode == Assessment.TimingMode.WHOLE and (duration is None or duration < 1):
+            raise serializers.ValidationError({"duration_seconds": "Set a positive whole-assessment time limit."})
+        attempt_limit = attrs.get("attempt_limit", self.instance.attempt_limit if self.instance else 1)
+        if attempt_limit < 1:
+            raise serializers.ValidationError({"attempt_limit": "Attempt limit must be at least one."})
+
+        questions = attrs.get("questions")
+        if questions is not None:
+            question_ids = [item["question"].pk for item in questions]
+            if len(question_ids) != len(set(question_ids)):
+                raise serializers.ValidationError({"questions": "A question can only appear once in an assessment."})
+            positions = [item.get("position", index) for index, item in enumerate(questions)]
+            if len(positions) != len(set(positions)):
+                raise serializers.ValidationError({"questions": "Question positions must be unique."})
+            if any(item["question"].bank.branch_id != branch.pk for item in questions):
+                raise serializers.ValidationError({"questions": "Questions must come from this branch's question bank."})
+            if timing_mode == Assessment.TimingMode.PER_QUESTION and any(not item.get("time_limit_seconds") for item in questions):
+                raise serializers.ValidationError({"questions": "Set a time limit for every question in per-question mode."})
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        questions = validated_data.pop("questions", [])
+        actor = self.context["request"].user
+        cohort = validated_data.get("cohort")
+        topic = validated_data.get("curriculum_topic")
+        branch = cohort.branch if cohort else topic.version.curriculum.branch
+        assessment = Assessment.objects.create(branch=branch, created_by=actor, **validated_data)
+        self._replace_questions(assessment, questions)
+        return assessment
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        questions = validated_data.pop("questions", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if questions is not None:
+            self._replace_questions(instance, questions)
+        return instance
+
+    def _replace_questions(self, assessment, questions):
+        AssessmentQuestion.objects.filter(assessment=assessment).delete()
+        for position, item in enumerate(questions):
+            AssessmentQuestion.objects.create(
+                assessment=assessment,
+                question=item["question"],
+                points=item["points"],
+                position=item.get("position", position),
+                time_limit_seconds=item.get("time_limit_seconds"),
+            )
+
+
+class AssessmentStudentSerializer(serializers.ModelSerializer):
+    question_count = serializers.SerializerMethodField()
+    my_attempts = serializers.SerializerMethodField()
+    attempt_details = serializers.SerializerMethodField()
+    can_start = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Assessment
+        fields = (
+            "id",
+            "title",
+            "description",
+            "assessment_type",
+            "timing_mode",
+            "duration_seconds",
+            "attempt_limit",
+            "deadline_at",
+            "question_count",
+            "my_attempts",
+            "attempt_details",
+            "can_start",
+            "results_released",
+        )
+
+    def get_question_count(self, obj):
+        return AssessmentQuestion.objects.filter(assessment=obj).count()
+
+    def get_my_attempts(self, obj):
+        return AssessmentAttempt.objects.filter(assessment=obj, student=self.context["request"].user).count()
+
+    def get_attempt_details(self, obj):
+        attempts = AssessmentAttempt.objects.filter(assessment=obj, student=self.context["request"].user)
+        return AssessmentAttemptSerializer(attempts, many=True, context=self.context).data
+
+    def get_can_start(self, obj):
+        return self.context["can_start"].get(obj.pk, False)
+
+
+class AssessmentQuestionStudentSerializer(serializers.ModelSerializer):
+    prompt = serializers.CharField(source="prompt_snapshot", read_only=True)
+    options = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AssessmentQuestion
+        fields = ("id", "prompt", "question_type_snapshot", "options", "points", "position", "time_limit_seconds")
+
+    def get_options(self, obj):
+        return obj.options_snapshot
+
+
+class AssessmentAttemptSerializer(serializers.ModelSerializer):
+    assessment_title = serializers.CharField(source="assessment.title", read_only=True)
+    question = serializers.SerializerMethodField()
+    question_count = serializers.SerializerMethodField()
+    answers = serializers.SerializerMethodField()
+    score_percent = serializers.SerializerMethodField()
+    results_released = serializers.BooleanField(source="assessment.results_released", read_only=True)
+
+    class Meta:
+        model = AssessmentAttempt
+        fields = (
+            "id",
+            "assessment",
+            "assessment_title",
+            "attempt_number",
+            "status",
+            "started_at",
+            "deadline_at",
+            "current_question_position",
+            "current_question_started_at",
+            "current_question_deadline_at",
+            "submitted_at",
+            "score",
+            "max_score",
+            "score_percent",
+            "question_count",
+            "question",
+            "answers",
+            "results_released",
+        )
+        read_only_fields = fields
+
+    def get_question_count(self, obj):
+        return AssessmentQuestion.objects.filter(assessment=obj.assessment).count()
+
+    def get_question(self, obj):
+        current = AssessmentQuestion.objects.filter(
+            assessment=obj.assessment,
+            position=obj.current_question_position,
+        ).first()
+        if current is None or obj.status != AssessmentAttempt.Status.IN_PROGRESS:
+            return None
+        return AssessmentQuestionStudentSerializer(current).data
+
+    def get_answers(self, obj):
+        released = obj.assessment.results_released
+        return [
+            {
+                "assessment_question": answer.assessment_question_id,
+                "selected_option_ids": answer.selected_option_ids,
+                "is_correct": answer.is_correct if released else None,
+                "points_awarded": answer.points_awarded if released else None,
+                "correct_option_ids": answer.assessment_question.correct_option_ids_snapshot if released else None,
+                "explanation": answer.assessment_question.explanation_snapshot if released else None,
+            }
+            for answer in AssessmentAnswer.objects.filter(attempt=obj).select_related("assessment_question")
+        ]
+
+    def get_score_percent(self, obj):
+        if not obj.assessment.results_released or obj.score is None or not obj.max_score:
+            return None
+        return round(float(obj.score / obj.max_score * 100), 1)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not instance.assessment.results_released:
+            data["score"] = None
+            data["max_score"] = None
+        return data

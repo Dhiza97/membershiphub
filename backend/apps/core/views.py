@@ -1,9 +1,11 @@
 from typing import cast
 from typing import Any
 from zoneinfo import ZoneInfo
+from datetime import timedelta
+from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view
 from rest_framework.exceptions import ValidationError
@@ -19,6 +21,10 @@ from apps.accounts.permissions import IsSuperAdmin
 
 from .models import (
     Attendance,
+    Assessment,
+    AssessmentAnswer,
+    AssessmentAttempt,
+    AssessmentQuestion,
     Branch,
     Cohort,
     Curriculum,
@@ -28,12 +34,20 @@ from .models import (
     CurriculumVersion,
     Enrollment,
     LearningMaterial,
+    Question,
+    QuestionBank,
+    QuestionOption,
     Session,
 )
 from .serializers import (
     AttendanceCreateSerializer,
     AttendanceSerializer,
     AttendanceUpdateSerializer,
+    AssessmentAttemptSerializer,
+    AssessmentQuestionAdminSerializer,
+    AssessmentQuestionStudentSerializer,
+    AssessmentSerializer,
+    AssessmentStudentSerializer,
     BranchSerializer,
     CohortFilterSerializer,
     CohortSerializer,
@@ -43,6 +57,7 @@ from .serializers import (
     CurriculumVersionSummarySerializer,
     EnrollmentCreateSerializer,
     EnrollmentSerializer,
+    QuestionBankQuestionSerializer,
     SessionSerializer,
 )
 
@@ -538,3 +553,472 @@ class CohortAttendanceReportView(CohortScopeMixin, APIView):
             "students": student_rows,
             "sessions": session_rows,
         })
+
+
+class IsAssessmentAuthor(BasePermission):
+    def has_permission(self, request, view) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and (
+                user.is_super_admin()
+                or user.is_branch_admin()
+                or user.application_role == User.ApplicationRole.INSTRUCTOR
+            )
+        )
+
+
+class AssessmentScopeMixin:
+    def get_assessment_queryset(self):
+        request = cast(Request, getattr(self, "request"))
+        user = request.user
+        queryset = Assessment.objects.select_related(
+            "branch", "cohort", "cohort__instructor", "curriculum_topic__version__curriculum"
+        ).prefetch_related("assessment_questions__question")
+        if user.is_super_admin():
+            return queryset
+        if user.is_branch_admin() and user.branch_id:
+            return queryset.filter(branch_id=user.branch_id)
+        if user.application_role == User.ApplicationRole.INSTRUCTOR and user.branch_id:
+            return queryset.filter(branch_id=user.branch_id, cohort__instructor_id=user.pk)
+        return queryset.none()
+
+    def get_assessment(self, assessment_id):
+        return get_object_or_404(self.get_assessment_queryset(), pk=assessment_id)
+
+
+class QuestionBankQuestionListCreateView(APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    def get_bank(self, request):
+        user = request.user
+        branch_id = user.branch_id
+        if user.is_super_admin():
+            branch_id = request.query_params.get("branch")
+        if not branch_id:
+            raise ValidationError({"branch": "A branch is required to access a question bank."})
+        branch = get_object_or_404(Branch, pk=branch_id)
+        if not user.is_super_admin() and branch.pk != user.branch_id:
+            raise ValidationError({"branch": "You can only manage your own branch's question bank."})
+        bank, _ = QuestionBank.objects.get_or_create(branch=branch)
+        return bank
+
+    def get(self, request):
+        bank = self.get_bank(request)
+        questions = Question.objects.filter(bank=bank).prefetch_related("options")
+        serializer = QuestionBankQuestionSerializer(questions, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        bank = self.get_bank(request)
+        serializer = QuestionBankQuestionSerializer(
+            data=request.data,
+            context={"request": request, "bank": bank},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=201)
+
+
+class QuestionBankQuestionDetailView(APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    def get_question(self, request, question_id):
+        user = request.user
+        queryset = Question.objects.select_related("bank__branch").prefetch_related("options")
+        if not user.is_super_admin():
+            queryset = queryset.filter(bank__branch_id=user.branch_id)
+        return get_object_or_404(queryset, pk=question_id)
+
+    def get(self, request, question_id):
+        return Response(QuestionBankQuestionSerializer(self.get_question(request, question_id)).data)
+
+    def patch(self, request, question_id):
+        question = self.get_question(request, question_id)
+        serializer = QuestionBankQuestionSerializer(question, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class AssessmentListCreateView(AssessmentScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    def get(self, request):
+        assessments = self.get_assessment_queryset()
+        return Response(AssessmentSerializer(assessments, many=True, context={"request": request}).data)
+
+    def post(self, request):
+        serializer = AssessmentSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        assessment = serializer.save()
+        return Response(AssessmentSerializer(assessment, context={"request": request}).data, status=201)
+
+
+class AssessmentDetailView(AssessmentScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    def get(self, request, assessment_id):
+        assessment = self.get_assessment(assessment_id)
+        return Response(AssessmentSerializer(assessment, context={"request": request}).data)
+
+    def patch(self, request, assessment_id):
+        assessment = self.get_assessment(assessment_id)
+        serializer = AssessmentSerializer(
+            assessment,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(AssessmentSerializer(assessment, context={"request": request}).data)
+
+
+class AssessmentPublishView(AssessmentScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    @transaction.atomic
+    def post(self, request, assessment_id):
+        assessment = self.get_assessment(assessment_id)
+        if assessment.status != Assessment.Status.DRAFT:
+            raise ValidationError({"status": "Only a draft assessment can be published."})
+        items = list(
+            AssessmentQuestion.objects.select_related("question")
+            .filter(assessment=assessment)
+            .order_by("position", "pk")
+        )
+        if not items:
+            raise ValidationError({"questions": "Add at least one question before publishing."})
+        if assessment.timing_mode == Assessment.TimingMode.PER_QUESTION and any(not item.time_limit_seconds for item in items):
+            raise ValidationError({"questions": "Every question needs a positive time limit."})
+        for item in items:
+            options = list(QuestionOption.objects.filter(question=item.question).order_by("position", "pk"))
+            if len(options) < 2 or not any(option.is_correct for option in options):
+                raise ValidationError({"questions": f"Question {getattr(item, 'question_id', None)} needs at least two options and a correct answer."})
+            if item.question.question_type == Question.Type.SINGLE and sum(option.is_correct for option in options) != 1:
+                raise ValidationError({"questions": f"Question {getattr(item, 'question_id', None)} must have exactly one correct option."})
+            item.prompt_snapshot = item.question.prompt
+            item.question_type_snapshot = item.question.question_type
+            item.options_snapshot = [{"id": option.pk, "text": option.text} for option in options]
+            item.correct_option_ids_snapshot = [option.pk for option in options if option.is_correct]
+            item.explanation_snapshot = item.question.explanation
+            item.save()
+        assessment.status = Assessment.Status.PUBLISHED
+        assessment.save()
+        return Response(AssessmentSerializer(assessment, context={"request": request}).data)
+
+
+class AssessmentNewVersionView(AssessmentScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    @transaction.atomic
+    def post(self, request, assessment_id):
+        original = self.get_assessment(assessment_id)
+        if original.status != Assessment.Status.PUBLISHED:
+            raise ValidationError({"status": "Only a published assessment can be copied to a new draft."})
+        draft = Assessment.objects.create(
+            branch=original.branch,
+            cohort=original.cohort,
+            curriculum_topic=original.curriculum_topic,
+            title=original.title,
+            description=original.description,
+            assessment_type=original.assessment_type,
+            timing_mode=original.timing_mode,
+            duration_seconds=original.duration_seconds,
+            attempt_limit=original.attempt_limit,
+            deadline_at=original.deadline_at,
+            created_by=request.user,
+        )
+        for item in AssessmentQuestion.objects.filter(assessment=original):
+            AssessmentQuestion.objects.create(
+                assessment=draft, question=item.question, position=item.position,
+                points=item.points, time_limit_seconds=item.time_limit_seconds,
+            )
+        return Response(AssessmentSerializer(draft, context={"request": request}).data, status=201)
+
+
+class AssessmentAttemptListView(AssessmentScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    def get(self, request, assessment_id):
+        assessment = self.get_assessment(assessment_id)
+        attempts = AssessmentAttempt.objects.filter(assessment=assessment).select_related("student").order_by(
+            "student__last_name", "student__first_name", "attempt_number"
+        )
+        return Response([
+            {
+                **dict(AssessmentAttemptSerializer(attempt, context={"request": request}).data),
+                "score": attempt.score,
+                "max_score": attempt.max_score,
+                "student": {
+                    "id": getattr(attempt, "student_id", None),
+                    "name": attempt.student.get_full_name() or attempt.student.username,
+                    "username": attempt.student.username,
+                },
+                "answers": [
+                    {
+                        "assessment_question": getattr(answer, "assessment_question_id", None),
+                        "prompt": answer.assessment_question.prompt_snapshot,
+                        "selected_option_ids": answer.selected_option_ids,
+                        "is_correct": answer.is_correct,
+                        "points_awarded": answer.points_awarded,
+                        "correct_option_ids": answer.assessment_question.correct_option_ids_snapshot,
+                        "explanation": answer.assessment_question.explanation_snapshot,
+                    }
+                    for answer in AssessmentAnswer.objects.filter(attempt=attempt).select_related("assessment_question")
+                ],
+            }
+            for attempt in attempts
+        ])
+
+
+class AssessmentResultsReleaseView(AssessmentScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsAssessmentAuthor)
+
+    @transaction.atomic
+    def post(self, request, assessment_id):
+        assessment = self.get_assessment(assessment_id)
+        assessment = Assessment.objects.select_for_update().get(pk=assessment.pk)
+        if assessment.status != Assessment.Status.PUBLISHED:
+            raise ValidationError({"status": "Publish the assessment before releasing results."})
+        attempts = AssessmentAttempt.objects.filter(assessment=assessment)
+        for attempt in attempts.select_for_update().select_related("assessment"):
+            _advance_expired_attempt(attempt)
+        if not attempts.exclude(status=AssessmentAttempt.Status.IN_PROGRESS).exists():
+            raise ValidationError({"attempts": "There are no submitted attempts to release."})
+        if attempts.filter(status=AssessmentAttempt.Status.IN_PROGRESS).exists():
+            raise ValidationError({"attempts": "All attempts must be submitted before releasing results."})
+        assessment.results_released = True
+        assessment.save(update_fields=("results_released", "updated_at"))
+        return Response({"assessment_id": assessment.pk, "results_released": True})
+
+
+class StudentAssessmentListView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        if request.user.application_role != User.ApplicationRole.STUDENT:
+            raise ValidationError({"detail": "Only Students can access assessments here."})
+        cohort_ids = list(Enrollment.objects.filter(student=request.user).values_list("cohort_id", flat=True))
+        curriculum_version_ids = list(Cohort.objects.filter(pk__in=cohort_ids).values_list("curriculum_version_id", flat=True))
+        assessments = Assessment.objects.filter(status=Assessment.Status.PUBLISHED).filter(
+            Q(cohort_id__in=cohort_ids)
+            | Q(curriculum_topic__version_id__in=curriculum_version_ids)
+        ).distinct()
+        now = timezone.now()
+        can_start = {}
+        for assessment in assessments:
+            attempts = AssessmentAttempt.objects.filter(assessment=assessment, student=request.user)
+            with transaction.atomic():
+                for attempt in attempts.select_for_update().select_related("assessment"):
+                    _advance_expired_attempt(attempt)
+            can_start[assessment.pk] = (
+                (assessment.deadline_at is None or now < assessment.deadline_at)
+                and not assessment.results_released
+                and not attempts.filter(status=AssessmentAttempt.Status.IN_PROGRESS).exists()
+                and attempts.count() < assessment.attempt_limit
+            )
+        return Response(AssessmentStudentSerializer(
+            assessments,
+            many=True,
+            context={"request": request, "can_start": can_start},
+        ).data)
+
+
+def _grade_attempt(attempt, status):
+    questions = list(AssessmentQuestion.objects.filter(assessment=attempt.assessment).order_by("position", "pk"))
+    score = Decimal("0.00")
+    max_score = Decimal("0.00")
+    for question in questions:
+        correct_ids = {int(option_id) for option_id in question.correct_option_ids_snapshot}
+        answer, _ = AssessmentAnswer.objects.get_or_create(
+            attempt=attempt,
+            assessment_question=question,
+            defaults={"selected_option_ids": []},
+        )
+        selected_ids = {int(option_id) for option_id in answer.selected_option_ids}
+        answer.is_correct = selected_ids == correct_ids
+        answer.points_awarded = question.points if answer.is_correct else Decimal("0.00")
+        answer.save(update_fields=("is_correct", "points_awarded"))
+        max_score += question.points
+        score += answer.points_awarded
+    attempt.score = score
+    attempt.max_score = max_score
+    attempt.status = status
+    attempt.submitted_at = timezone.now()
+    attempt.save(update_fields=("score", "max_score", "status", "submitted_at"))
+
+
+def _question_deadline(assessment_question, started_at, assessment_deadline):
+    question_deadline = started_at + timedelta(seconds=assessment_question.time_limit_seconds)
+    if assessment_deadline is not None:
+        return min(question_deadline, assessment_deadline)
+    return question_deadline
+
+
+def _advance_expired_attempt(attempt):
+    if attempt.status != AssessmentAttempt.Status.IN_PROGRESS:
+        return
+    now = timezone.now()
+    if attempt.deadline_at and now >= attempt.deadline_at:
+        _grade_attempt(attempt, AssessmentAttempt.Status.TIMED_OUT)
+        return
+    if attempt.assessment.timing_mode != Assessment.TimingMode.PER_QUESTION:
+        return
+    while attempt.current_question_deadline_at and now >= attempt.current_question_deadline_at:
+        next_question = AssessmentQuestion.objects.filter(
+            assessment=attempt.assessment,
+            position__gt=attempt.current_question_position,
+        ).order_by("position", "pk").first()
+        if next_question is None:
+            _grade_attempt(attempt, AssessmentAttempt.Status.TIMED_OUT)
+            return
+        started_at = attempt.current_question_deadline_at
+        attempt.current_question_position = next_question.position
+        attempt.current_question_started_at = started_at
+        attempt.current_question_deadline_at = _question_deadline(next_question, started_at, attempt.deadline_at)
+        attempt.save(update_fields=(
+            "current_question_position", "current_question_started_at", "current_question_deadline_at"
+        ))
+
+
+class StudentAssessmentAttemptStartView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    @transaction.atomic
+    def post(self, request, assessment_id):
+        student = request.user
+        if student.application_role != User.ApplicationRole.STUDENT:
+            raise ValidationError({"detail": "Only Students can start assessment attempts."})
+        assessment = get_object_or_404(Assessment.objects.select_for_update(), pk=assessment_id, status=Assessment.Status.PUBLISHED)
+        enrolled = (
+            getattr(assessment, "cohort_id", None) is not None
+            and Enrollment.objects.filter(cohort_id=getattr(assessment, "cohort_id", None), student=student).exists()
+        )
+        if getattr(assessment, "curriculum_topic_id", None):
+            enrolled = enrolled or Enrollment.objects.filter(
+                student=student,
+                cohort__curriculum_version_id=getattr(assessment.curriculum_topic, "version_id", None),
+            ).exists()
+        if not enrolled:
+            raise ValidationError({"assessment": "You are not enrolled in this assessment's cohort."})
+        now = timezone.now()
+        if assessment.results_released:
+            raise ValidationError({"assessment": "Results have been released; new attempts are closed."})
+        if assessment.deadline_at and now >= assessment.deadline_at:
+            raise ValidationError({"deadline_at": "The assessment deadline has passed."})
+        attempts = AssessmentAttempt.objects.select_for_update().filter(assessment=assessment, student=student)
+        for attempt in attempts.select_related("assessment"):
+            _advance_expired_attempt(attempt)
+        if attempts.filter(status=AssessmentAttempt.Status.IN_PROGRESS).exists():
+            raise ValidationError({"attempt": "An attempt is already in progress."})
+        attempt_number = attempts.count() + 1
+        if attempt_number > assessment.attempt_limit:
+            raise ValidationError({"attempt_limit": "You have reached the attempt limit."})
+        first_question = AssessmentQuestion.objects.filter(assessment=assessment).order_by("position", "pk").first()
+        if first_question is None:
+            raise ValidationError({"questions": "This assessment has no questions."})
+        whole_deadline = (
+            now + timedelta(seconds=assessment.duration_seconds)
+            if assessment.timing_mode == Assessment.TimingMode.WHOLE and assessment.duration_seconds
+            else None
+        )
+        if assessment.deadline_at:
+            whole_deadline = min(whole_deadline, assessment.deadline_at) if whole_deadline else assessment.deadline_at
+        question_deadline = None
+        if assessment.timing_mode == Assessment.TimingMode.PER_QUESTION:
+            question_deadline = _question_deadline(first_question, now, whole_deadline)
+        attempt = AssessmentAttempt.objects.create(
+            assessment=assessment,
+            student=student,
+            attempt_number=attempt_number,
+            started_at=now,
+            deadline_at=whole_deadline,
+            current_question_position=first_question.position,
+            current_question_started_at=now,
+            current_question_deadline_at=question_deadline,
+        )
+        return Response(AssessmentAttemptSerializer(attempt, context={"request": request}).data, status=201)
+
+
+class StudentAssessmentAttemptDetailView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get_attempt(self, request, attempt_id):
+        return get_object_or_404(
+            AssessmentAttempt.objects.select_related("assessment"),
+            pk=attempt_id,
+            student=request.user,
+            student__application_role=User.ApplicationRole.STUDENT,
+        )
+
+    def get(self, request, attempt_id):
+        with transaction.atomic():
+            attempt = AssessmentAttempt.objects.select_for_update().select_related("assessment").get(pk=self.get_attempt(request, attempt_id).pk)
+            _advance_expired_attempt(attempt)
+            attempt.refresh_from_db()
+        return Response(AssessmentAttemptSerializer(attempt, context={"request": request}).data)
+
+    @transaction.atomic
+    def post(self, request, attempt_id):
+        scoped_attempt = self.get_attempt(request, attempt_id)
+        if (
+            request.user.application_role != User.ApplicationRole.STUDENT
+            or getattr(scoped_attempt, "student_id", None) != request.user.pk
+        ):
+            raise ValidationError({"attempt": "Only the Student who owns this attempt can submit answers."})
+        attempt = AssessmentAttempt.objects.select_for_update().select_related("assessment").get(pk=scoped_attempt.pk)
+        previous_position = attempt.current_question_position
+        _advance_expired_attempt(attempt)
+        attempt.refresh_from_db()
+        if attempt.status != AssessmentAttempt.Status.IN_PROGRESS or attempt.current_question_position != previous_position:
+            return Response(AssessmentAttemptSerializer(attempt, context={"request": request}).data)
+        question = AssessmentQuestion.objects.filter(
+            assessment=attempt.assessment,
+            position=attempt.current_question_position,
+        ).first()
+        if question is None:
+            _grade_attempt(attempt, AssessmentAttempt.Status.SUBMITTED)
+            return Response(AssessmentAttemptSerializer(attempt, context={"request": request}).data)
+        selected_option_ids = request.data.get("selected_option_ids", [])
+        if not isinstance(selected_option_ids, list) or any(not isinstance(value, int) for value in selected_option_ids):
+            raise ValidationError({"selected_option_ids": "Provide a list of option IDs."})
+        if len(selected_option_ids) != len(set(selected_option_ids)):
+            raise ValidationError({"selected_option_ids": "An option cannot be selected more than once."})
+        valid_option_ids = {item["id"] for item in question.options_snapshot}
+        if not set(selected_option_ids).issubset(valid_option_ids):
+            raise ValidationError({"selected_option_ids": "Choose only options belonging to the current question."})
+        if question.question_type_snapshot == Question.Type.SINGLE and len(selected_option_ids) > 1:
+            raise ValidationError({"selected_option_ids": "Select at most one option for this question."})
+        if "assessment_question" in request.data and request.data["assessment_question"] != question.pk:
+            raise ValidationError({"assessment_question": "This is not the current question."})
+        action = request.data.get("action", "next")
+        if action not in ("save", "next", "submit"):
+            raise ValidationError({"action": "Choose save, next, or submit."})
+        AssessmentAnswer.objects.update_or_create(
+            attempt=attempt,
+            assessment_question=question,
+            defaults={"selected_option_ids": selected_option_ids},
+        )
+        next_question = AssessmentQuestion.objects.filter(
+            assessment=attempt.assessment,
+            position__gt=attempt.current_question_position,
+        ).order_by("position", "pk").first()
+        if action == "submit" or (action == "next" and next_question is None):
+            _grade_attempt(attempt, AssessmentAttempt.Status.SUBMITTED)
+        elif action == "next" and next_question is not None:
+            now = timezone.now()
+            attempt.current_question_position = next_question.position
+            attempt.current_question_started_at = now
+            attempt.current_question_deadline_at = (
+                _question_deadline(next_question, now, attempt.deadline_at)
+                if attempt.assessment.timing_mode == Assessment.TimingMode.PER_QUESTION
+                else None
+            )
+            attempt.save(update_fields=(
+                "current_question_position", "current_question_started_at", "current_question_deadline_at"
+            ))
+        attempt.refresh_from_db()
+        return Response(AssessmentAttemptSerializer(attempt, context={"request": request}).data)

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
 	Building2,
 	BookOpen,
 	ChevronRight,
+	ClipboardList,
 	CircleHelp,
 	GraduationCap,
 	Layers3,
@@ -15,24 +16,29 @@ import { BranchInfo, BranchManager, UserManager } from './AdminScreens.jsx'
 import { CohortBoard, CohortDetail, CohortWizard } from './CohortScreens.jsx'
 import { CurriculumManager } from './CurriculumScreens.jsx'
 import { SessionManager } from './SessionScreens.jsx'
+import { AssessmentManager, StudentAssessments } from './AssessmentScreens.jsx'
 import { mockApi } from './api/mockApi.js'
 
 const NAV_ITEMS = {
 	SUPER_ADMIN: [
 		{ id: 'cohorts', label: 'Cohorts', icon: GraduationCap },
+		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
 		{ id: 'curricula', label: 'Curricula', icon: BookOpen },
 		{ id: 'users', label: 'People', icon: UsersRound },
 		{ id: 'branches', label: 'Branches', icon: Building2 },
 	],
 	BRANCH_ADMIN: [
 		{ id: 'cohorts', label: 'Cohorts', icon: GraduationCap },
+		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
 		{ id: 'curricula', label: 'Curricula', icon: BookOpen },
 		{ id: 'users', label: 'People', icon: UsersRound },
 		{ id: 'branch-info', label: 'My branch', icon: Building2 },
 	],
 	INSTRUCTOR: [
 		{ id: 'cohorts', label: 'My cohorts', icon: GraduationCap },
+		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
 	],
+	STUDENT: [{ id: 'assessments', label: 'My assessments', icon: ClipboardList }],
 }
 
 const PAGE_TITLES = {
@@ -41,6 +47,7 @@ const PAGE_TITLES = {
 	'cohort-detail': 'Cohort detail',
 	'cohort-wizard': 'Cohort setup',
 	sessions: 'Sessions and attendance',
+	assessments: 'Assessments',
 	users: 'People management',
 	branches: 'Branch management',
 	'branch-info': 'Branch information',
@@ -53,6 +60,7 @@ function displayName(user) {
 function roleName(role) {
 	if (role === 'SUPER_ADMIN') return 'Super Admin'
 	if (role === 'INSTRUCTOR') return 'Instructor'
+	if (role === 'STUDENT') return 'Student'
 	return 'Branch Admin'
 }
 
@@ -63,12 +71,18 @@ export default function App() {
 	const [busy, setBusy] = useState(false)
 	const [notice, setNotice] = useState('')
 	const [loadError, setLoadError] = useState('')
+	const refreshAssessment = useCallback(async () => {
+		setSnapshot(await mockApi.snapshot())
+	}, [])
 
 	useEffect(() => {
 		let active = true
 		mockApi.snapshot()
 			.then((data) => {
-				if (active) setSnapshot(data)
+				if (active) {
+					setSnapshot(data)
+					if (data.currentUser?.application_role === 'STUDENT') setView('assessments')
+				}
 			})
 			.catch(() => {
 				if (active) setLoadError('The local demo could not load. Refresh the page to try again.')
@@ -98,8 +112,9 @@ export default function App() {
 		setBusy(true)
 		setLoadError('')
 		try {
-			setSnapshot(await mockApi.signIn(userId))
-			setView('cohorts')
+			const data = await mockApi.signIn(userId)
+			setSnapshot(data)
+			setView(data.currentUser.application_role === 'STUDENT' ? 'assessments' : 'cohorts')
 		} catch (error) {
 			setLoadError(error.message)
 		} finally {
@@ -219,6 +234,10 @@ export default function App() {
 		)
 	}
 
+	async function assessmentAction(method, ...args) {
+		return mutate(() => mockApi[method](...args, currentUser), '')
+	}
+
 	function navigate(nextView) {
 		setView(nextView)
 		setSelectedCohortId(null)
@@ -272,6 +291,7 @@ export default function App() {
 						{view === 'cohort-wizard' && <CohortWizard cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} curricula={visibleCurricula} curriculumVersions={visibleCurriculumVersions} user={currentUser} busy={busy} onCancel={() => setView(selectedCohort ? 'cohort-detail' : 'cohorts')} onSave={saveCohort} />}
 						{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => mockApi.addStudent(cohortId, studentId, currentUser), 'Student enrolled in this demo.')} onRemoveStudent={(cohortId, studentId) => mutate(() => mockApi.removeStudent(cohortId, studentId, currentUser), 'Student removed from this demo.')} />}
 						{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
+						{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
 						{view === 'users' && <UserManager users={snapshot.users} branches={visibleBranches} currentUser={currentUser} busy={busy} onSave={saveUser} />}
 						{view === 'curricula' && <CurriculumManager curricula={visibleCurricula} versions={visibleCurriculumVersions} branches={visibleBranches} user={currentUser} busy={busy} onCreate={createCurriculum} onUpdate={saveCurriculum} onCreateVersion={createCurriculumVersion} onSaveVersion={saveCurriculumVersion} onPublish={publishCurriculumVersion} />}
 						{view === 'branches' && isSuperAdmin && <BranchManager branches={snapshot.branches} users={snapshot.users} cohorts={snapshot.cohorts} busy={busy} onSave={saveBranch} />}
@@ -311,6 +331,7 @@ function LoginScreen({ users, busy, error, onSignIn }) {
 	const superAdmin = users.find((user) => user.application_role === 'SUPER_ADMIN')
 	const branchAdmin = users.find((user) => user.application_role === 'BRANCH_ADMIN' && user.is_active)
 	const instructor = users.find((user) => user.application_role === 'INSTRUCTOR' && user.is_active)
+	const student = users.find((user) => user.application_role === 'STUDENT' && user.is_active)
 	return (
 		<main className="grid min-h-screen bg-white lg:grid-cols-[minmax(0,1fr)_430px]">
 			<section className="relative flex min-h-[42vh] flex-col justify-between overflow-hidden bg-hub-ink px-6 py-7 text-white sm:px-10 lg:min-h-screen lg:px-16 lg:py-12">
@@ -329,7 +350,7 @@ function LoginScreen({ users, busy, error, onSignIn }) {
 					<p className="mt-2 text-sm leading-6 text-hub-muted">Sign in locally to explore the role-specific workspace. No backend connection is made.</p>
 					{error && <p role="alert" className="mt-5 border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">{error}</p>}
 					<div className="mt-7 divide-y divide-hub-line border-y border-hub-line">
-						{[superAdmin, branchAdmin, instructor].filter(Boolean).map((user) => {
+						{[superAdmin, branchAdmin, instructor, student].filter(Boolean).map((user) => {
 							const isSuperAdmin = user.application_role === 'SUPER_ADMIN'
 							const role = roleName(user.application_role)
 							return (

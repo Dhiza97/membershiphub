@@ -1,6 +1,7 @@
 from datetime import date, time, timedelta
 from typing import cast
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
@@ -9,6 +10,13 @@ from rest_framework.test import APITestCase
 from apps.accounts.models import User
 
 from .models import (
+    Assessment,
+    AssessmentAttempt,
+    AssessmentAnswer,
+    AssessmentQuestion,
+    Question,
+    QuestionBank,
+    QuestionOption,
     Branch,
     Cohort,
     Curriculum,
@@ -18,6 +26,169 @@ from .models import (
     Session,
     Attendance,
 )
+
+
+class AssessmentAPITests(APITestCase):
+    def setUp(self):
+        self.branch = Branch.objects.create(name="Assessment branch")
+        self.instructor = User.objects.create_user(username="assessment-instructor", application_role=User.ApplicationRole.INSTRUCTOR, branch=self.branch)
+        self.student = User.objects.create_user(username="assessment-student", application_role=User.ApplicationRole.STUDENT, branch=self.branch)
+        self.cohort = Cohort.objects.create(branch=self.branch, name="Assessment cohort", instructor=self.instructor)
+        Enrollment.objects.create(cohort=self.cohort, student=self.student)
+
+    def published_assessment(self, timing_mode=Assessment.TimingMode.WHOLE, count=1):
+        bank = QuestionBank.objects.create(branch=self.branch)
+        assessment = Assessment.objects.create(
+            branch=self.branch, cohort=self.cohort, title="Test assessment", timing_mode=timing_mode,
+            duration_seconds=300 if timing_mode == Assessment.TimingMode.WHOLE else None,
+        )
+        for position in range(count):
+            question = Question.objects.create(bank=bank, prompt=f"Question {position}")
+            correct = QuestionOption.objects.create(question=question, text="Correct", position=0, is_correct=True)
+            other = QuestionOption.objects.create(question=question, text="Other", position=1)
+            AssessmentQuestion.objects.create(
+                assessment=assessment, question=question, position=position, time_limit_seconds=10,
+                prompt_snapshot=question.prompt, question_type_snapshot=question.question_type,
+                options_snapshot=[{"id": correct.pk, "text": correct.text}, {"id": other.pk, "text": other.text}],
+                correct_option_ids_snapshot=[correct.pk],
+            )
+        assessment.status = Assessment.Status.PUBLISHED
+        assessment.save()
+        return assessment
+
+    def test_per_question_timeout_does_not_apply_late_answer_to_next_question(self):
+        assessment = self.published_assessment(Assessment.TimingMode.PER_QUESTION, count=2)
+        self.client.force_login(self.student)
+        response = self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/")
+        attempt = AssessmentAttempt.objects.get(pk=response.json()["id"])
+        attempt.current_question_deadline_at = timezone.now() - timedelta(seconds=1)
+        attempt.save(update_fields=("current_question_deadline_at",))
+        option_id = response.json()["question"]["options"][0]["id"]
+        response = self.client.post(f"/api/student/attempts/{attempt.pk}/", {"selected_option_ids": [option_id]}, format="json")
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertEqual(response.json()["current_question_position"], 1)
+        self.assertFalse(AssessmentAnswer.objects.filter(attempt=attempt).exists())
+        attempt.refresh_from_db()
+        attempt.current_question_deadline_at = timezone.now() - timedelta(seconds=30)
+        attempt.save(update_fields=("current_question_deadline_at",))
+        response = self.client.get(f"/api/student/attempts/{attempt.pk}/")
+        self.assertEqual(response.json()["status"], AssessmentAttempt.Status.TIMED_OUT)
+        self.assertEqual(AssessmentAnswer.objects.filter(attempt=attempt).count(), 2)
+
+    def test_enrollment_attempt_limit_and_release_lock(self):
+        assessment = self.published_assessment()
+        outsider = User.objects.create_user(username="outsider", application_role=User.ApplicationRole.STUDENT, branch=self.branch)
+        self.client.force_login(outsider)
+        self.assertEqual(self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/").status_code, 400)
+        self.client.force_login(self.student)
+        started = self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/").json()
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.post(f"/api/assessments/{assessment.pk}/release-results/").status_code, 400)
+        self.assertEqual(self.client.get(f"/api/student/attempts/{started['id']}/").status_code, 404)
+        self.client.force_login(self.student)
+        self.client.post(f"/api/student/attempts/{started['id']}/", {"action": "submit"}, format="json")
+        self.assertEqual(self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/").status_code, 400)
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.post(f"/api/assessments/{assessment.pk}/release-results/").status_code, 200)
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/").status_code, 400)
+
+    def test_published_snapshot_is_unchanged_when_question_bank_is_edited(self):
+        assessment = self.published_assessment()
+        item = AssessmentQuestion.objects.get(assessment=assessment)
+        self.client.force_login(self.instructor)
+        response = self.client.patch(f"/api/question-bank/questions/{item.question.pk}/", {"prompt": "Changed prompt"}, format="json")
+        self.assertEqual(response.status_code, 200, response.json())
+        response = self.client.patch(f"/api/assessments/{assessment.pk}/", {"title": "Changed"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.client.force_login(self.student)
+        response = self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/")
+        self.assertEqual(response.json()["question"]["prompt"], "Question 0")
+
+    def test_isolation_and_new_draft_version(self):
+        assessment = self.published_assessment()
+        other_branch = Branch.objects.create(name="Other branch")
+        other_admin = User.objects.create_user(username="other-admin", application_role=User.ApplicationRole.BRANCH_ADMIN, branch=other_branch)
+        other_instructor = User.objects.create_user(username="other-teacher", application_role=User.ApplicationRole.INSTRUCTOR, branch=self.branch)
+        self.client.force_login(other_admin)
+        self.assertEqual(self.client.get(f"/api/assessments/{assessment.pk}/").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/question-bank/questions/{AssessmentQuestion.objects.get(assessment=assessment).question.pk}/").status_code, 404)
+        self.client.force_login(other_instructor)
+        self.assertEqual(self.client.get(f"/api/assessments/{assessment.pk}/").status_code, 404)
+        self.client.force_login(self.instructor)
+        response = self.client.post(f"/api/assessments/{assessment.pk}/new-version/")
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()["status"], Assessment.Status.DRAFT)
+        self.assertEqual(len(response.json()["question_details"]), 1)
+        self.assertNotEqual(response.json()["id"], assessment.pk)
+
+    def test_deadline_and_author_review_score(self):
+        assessment = self.published_assessment()
+        self.client.force_login(self.student)
+        response = self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/")
+        attempt = response.json()
+        self.client.post(f"/api/student/attempts/{attempt['id']}/", {
+            "selected_option_ids": [attempt["question"]["options"][0]["id"]],
+        }, format="json")
+        self.client.force_login(self.instructor)
+        review = self.client.get(f"/api/assessments/{assessment.pk}/attempts/")
+        self.assertEqual(review.json()[0]["score"], 1)
+        self.assertEqual(review.json()[0]["answers"][0]["is_correct"], True)
+        Assessment.objects.filter(pk=assessment.pk).update(deadline_at=timezone.now() - timedelta(seconds=1), attempt_limit=2)
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.post(f"/api/student/assessments/{assessment.pk}/attempts/").status_code, 400)
+
+    def test_answer_cannot_reference_another_assessments_question(self):
+        assessment = self.published_assessment()
+        question = AssessmentQuestion.objects.get(assessment=assessment)
+        other = Assessment.objects.create(branch=self.branch, cohort=self.cohort, title="Other", duration_seconds=60)
+        other_question = AssessmentQuestion.objects.create(assessment=other, question=question.question)
+        attempt = AssessmentAttempt.objects.create(assessment=assessment, student=self.student, attempt_number=1)
+        with self.assertRaises(DjangoValidationError):
+            AssessmentAnswer.objects.create(attempt=attempt, assessment_question=other_question)
+
+    def test_author_publish_attempt_and_release(self):
+        self.client.force_login(self.instructor)
+        question_response = self.client.post("/api/question-bank/questions/", {
+            "prompt": "Select both correct answers",
+            "question_type": "MULTIPLE",
+            "options": [
+                {"text": "First", "is_correct": True},
+                {"text": "Second", "is_correct": True},
+                {"text": "Third", "is_correct": False},
+            ],
+        }, format="json")
+        self.assertEqual(question_response.status_code, 201, question_response.json())
+        question = question_response.json()
+        response = self.client.post("/api/assessments/", {
+            "title": "Quiz", "cohort": self.cohort.pk, "duration_seconds": 300,
+            "questions": [{"question": question["id"]}],
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.json())
+        assessment_id = response.json()["id"]
+        response = self.client.post(f"/api/assessments/{assessment_id}/publish/")
+        self.assertEqual(response.status_code, 200, response.json())
+
+        self.client.force_login(self.student)
+        response = self.client.post(f"/api/student/assessments/{assessment_id}/attempts/")
+        self.assertEqual(response.status_code, 201, response.json())
+        attempt = response.json()
+        self.assertNotIn("correct_option_ids", attempt["question"])
+        response = self.client.post(f"/api/student/attempts/{attempt['id']}/", {
+            "selected_option_ids": [question["options"][0]["id"]],
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertIsNone(response.json()["score"])
+        self.assertIsNone(response.json()["answers"][0]["correct_option_ids"])
+        self.assertEqual(AssessmentAttempt.objects.get(pk=attempt["id"]).score, 0)
+
+        self.client.force_login(self.instructor)
+        response = self.client.post(f"/api/assessments/{assessment_id}/release-results/")
+        self.assertEqual(response.status_code, 200, response.json())
+        self.client.force_login(self.student)
+        response = self.client.get(f"/api/student/attempts/{attempt['id']}/")
+        self.assertEqual(response.json()["score"], "0.00")
+        self.assertEqual(Assessment.objects.get(pk=assessment_id).status, Assessment.Status.PUBLISHED)
 
 
 class BranchModelTests(TestCase):
