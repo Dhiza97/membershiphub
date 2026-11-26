@@ -9,7 +9,7 @@ import {
   Megaphone,
   UsersRound,
 } from 'lucide-react'
-import { calculateGraduationReport } from './api/mockApi.js'
+import { calculateGraduationReport } from '../services/mockApi.js'
 
 const input = 'mt-1 min-h-10 w-full border border-hub-line bg-white px-3 text-sm text-hub-ink'
 const primary = 'inline-flex min-h-10 items-center justify-center gap-2 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50'

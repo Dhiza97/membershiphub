@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Archive, BadgeCheck, ClipboardCheck, Download, ExternalLink, Settings2 } from 'lucide-react'
-import { calculateGraduationReport } from './api/mockApi.js'
-import { downloadCertificatePdf } from './certificatePdf.js'
+import { calculateGraduationReport } from '../services/mockApi.js'
+import { downloadCertificatePdf } from '../services/certificatePdf.js'
 
 const primary = 'inline-flex min-h-10 items-center justify-center gap-2 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50'
 const secondary = 'inline-flex min-h-10 items-center justify-center gap-2 border border-hub-line bg-white px-4 text-sm font-semibold hover:border-hub-purple disabled:opacity-50'

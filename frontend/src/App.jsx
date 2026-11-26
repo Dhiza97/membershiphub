@@ -3,27 +3,23 @@ import {
 	Building2,
 	BookOpen,
 	Award,
-	ChevronRight,
 	ClipboardList,
 	ChartNoAxesCombined,
-	CircleHelp,
 	GraduationCap,
 	LayoutDashboard,
-	Layers3,
-	LogOut,
-	RotateCcw,
-	ShieldCheck,
 	UsersRound,
 } from 'lucide-react'
-import { BranchInfo, BranchManager, UserManager } from './AdminScreens.jsx'
-import { CohortBoard, CohortDetail, CohortWizard } from './CohortScreens.jsx'
-import { CurriculumManager } from './CurriculumScreens.jsx'
-import { SessionManager } from './SessionScreens.jsx'
-import { AssessmentManager, StudentAssessments } from './AssessmentScreens.jsx'
-import { ResultsManager } from './ResultsScreens.jsx'
-import { PublicCertificateVerification, StudentCertificateScreen } from './CertificateScreens.jsx'
-import { DashboardScreen } from './DashboardScreens.jsx'
-import { mockApi } from './api/mockApi.js'
+import { AppShell } from './components/AppShell.jsx'
+import { LoadingScreen, LoginScreen, MissingCohort } from './components/AuthScreens.jsx'
+import { BranchInfo, BranchManager, UserManager } from './pages/AdminScreens.jsx'
+import { CohortBoard, CohortDetail, CohortWizard } from './pages/CohortScreens.jsx'
+import { CurriculumManager } from './pages/CurriculumScreens.jsx'
+import { SessionManager } from './pages/SessionScreens.jsx'
+import { AssessmentManager, StudentAssessments } from './pages/AssessmentScreens.jsx'
+import { ResultsManager } from './pages/ResultsScreens.jsx'
+import { PublicCertificateVerification, StudentCertificateScreen } from './pages/CertificateScreens.jsx'
+import { DashboardScreen } from './pages/DashboardScreens.jsx'
+import { mockApi } from './services/mockApi.js'
 
 const NAV_ITEMS = {
 	SUPER_ADMIN: [
@@ -69,17 +65,6 @@ const PAGE_TITLES = {
 	users: 'People management',
 	branches: 'Branch management',
 	'branch-info': 'Branch information',
-}
-
-function displayName(user) {
-	return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username
-}
-
-function roleName(role) {
-	if (role === 'SUPER_ADMIN') return 'Super Admin'
-	if (role === 'INSTRUCTOR') return 'Instructor'
-	if (role === 'STUDENT') return 'Student'
-	return 'Branch Admin'
 }
 
 export default function App() {
@@ -294,143 +279,32 @@ export default function App() {
 	const pageTitle = PAGE_TITLES[view] ?? 'MembershipHub'
 
 	return (
-		<div className="min-h-screen bg-[#f5f3f6] text-hub-ink">
-			<div className="lg:grid lg:min-h-screen lg:grid-cols-[236px_minmax(0,1fr)]">
-				<aside className="hidden border-r border-[#ded9e0] bg-white lg:flex lg:flex-col">
-					<div className="flex h-[76px] items-center gap-3 border-b border-hub-line px-5">
-						<BrandMark />
-						<span className="text-[15px] font-bold tracking-tight">MembershipHub</span>
-					</div>
-					<div className="px-4 pt-5">
-						<span className="block px-2 text-[10px] font-bold uppercase text-hub-muted">Workspace</span>
-						<span className="mt-1 block truncate px-2 text-sm font-semibold">{isSuperAdmin ? 'Organization' : currentBranch?.name ?? 'Branch unassigned'}</span>
-					</div>
-					<nav aria-label="Main navigation" className="mt-6 space-y-1 px-3">
-						{visibleNav.map((item) => <NavButton key={item.id} item={item} active={view === item.id || (view.startsWith('cohort-') && item.id === 'cohorts')} onClick={() => navigate(item.id)} />)}
-					</nav>
-					<div className="mt-auto border-t border-hub-line p-4">
-						<div className="flex items-center gap-3">
-							<Avatar user={currentUser} />
-							<div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{displayName(currentUser)}</p><p className="truncate text-xs text-hub-muted">{roleName(currentUser.application_role)}</p></div>
-						</div>
-						<button type="button" onClick={signOut} className="mt-4 flex min-h-9 w-full items-center gap-2 px-2 text-xs font-semibold text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink"><LogOut size={15} aria-hidden="true" />Sign out of demo</button>
-					</div>
-				</aside>
-
-				<div className="min-w-0">
-					<header className="sticky top-0 z-20 border-b border-hub-line bg-white">
-						<div className="flex min-h-[68px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
-							  <div className="flex min-w-0 items-center gap-2 lg:hidden"><BrandMark /><span className="truncate text-xs font-bold">MembershipHub</span></div>
-							<div className="hidden min-w-0 items-center gap-2 text-xs text-hub-muted lg:flex"><span>{isSuperAdmin ? 'Organization' : currentBranch?.name ?? 'Branch unassigned'}</span><ChevronRight size={14} aria-hidden="true" /><span className="font-semibold text-hub-ink">{pageTitle}</span></div>
-							<div className="ml-auto flex items-center gap-2 sm:gap-4">
-								<span className="inline-flex min-h-7 items-center gap-2 border border-[#e5d7e3] bg-[#fbf6fa] px-2 text-[10px] font-bold uppercase text-hub-purple"><span className="size-1.5 rounded-full bg-hub-purple" />Demo</span>
-								<button type="button" onClick={resetDemo} disabled={busy} title="Reset local demo data" aria-label="Reset local demo data" className="grid size-9 place-items-center text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink disabled:opacity-50"><RotateCcw size={16} aria-hidden="true" /></button>
-								<button type="button" onClick={signOut} className="flex min-h-9 items-center gap-2 border-l border-hub-line pl-3 text-xs font-semibold text-hub-muted hover:text-hub-ink lg:hidden"><Avatar user={currentUser} small /><span className="sr-only">Sign out</span></button>
-							</div>
-						</div>
-						<nav aria-label="Mobile navigation" className="flex gap-1 overflow-x-auto border-t border-hub-line px-3 py-1.5 lg:hidden">
-							{visibleNav.map((item) => <NavButton key={item.id} item={item} active={view === item.id || (view.startsWith('cohort-') && item.id === 'cohorts')} onClick={() => navigate(item.id)} compact />)}
-						</nav>
-					</header>
-
-					<main className="mx-auto min-h-[calc(100vh-118px)] w-full max-w-[1500px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-						{view === 'dashboard' && <DashboardScreen snapshot={snapshot} user={currentUser} busy={busy} onNavigate={navigate} onOpenCohort={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} onOpenSessions={openCohortSessions} onMarkNotificationRead={markNotificationRead} onPostAnnouncement={postAnnouncement} />}
-						{view === 'cohorts' && <CohortBoard cohorts={visibleCohorts} branches={visibleBranches} users={snapshot.users} isSuperAdmin={isSuperAdmin} canCreate={isSuperAdmin || currentUser.application_role === 'BRANCH_ADMIN'} onCreate={() => { setSelectedCohortId(null); setView('cohort-wizard') }} onOpen={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} />}
-						{view === 'cohort-wizard' && <CohortWizard cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} curricula={visibleCurricula} curriculumVersions={visibleCurriculumVersions} user={currentUser} busy={busy} onCancel={() => setView(selectedCohort ? 'cohort-detail' : 'cohorts')} onSave={saveCohort} />}
-						{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => mockApi.addStudent(cohortId, studentId, currentUser), 'Student enrolled in this demo.')} onRemoveStudent={(cohortId, studentId) => mutate(() => mockApi.removeStudent(cohortId, studentId, currentUser), 'Student removed from this demo.')} />}
-						{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
-						{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
-						{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} onIssueCertificates={issueCertificates} />}
-						{view === 'certificates' && currentUser.application_role === 'STUDENT' && <StudentCertificateScreen certificates={snapshot.certificates} />}
-						{view === 'users' && <UserManager users={snapshot.users} branches={visibleBranches} currentUser={currentUser} busy={busy} onSave={saveUser} />}
-						{view === 'curricula' && <CurriculumManager curricula={visibleCurricula} versions={visibleCurriculumVersions} branches={visibleBranches} user={currentUser} busy={busy} onCreate={createCurriculum} onUpdate={saveCurriculum} onCreateVersion={createCurriculumVersion} onSaveVersion={saveCurriculumVersion} onPublish={publishCurriculumVersion} />}
-						{view === 'branches' && isSuperAdmin && <BranchManager branches={snapshot.branches} users={snapshot.users} cohorts={snapshot.cohorts} busy={busy} onSave={saveBranch} />}
-						{view === 'branch-info' && !isSuperAdmin && <BranchInfo branch={currentBranch} users={snapshot.users} cohorts={visibleCohorts} />}
-						{view === 'cohort-detail' && !selectedCohort && <MissingCohort onBack={() => setView('cohorts')} />}
-					</main>
-
-					<footer className="border-t border-hub-line bg-white px-4 py-3 text-center text-[11px] text-hub-muted sm:px-6 lg:px-8">
-						Local demo data is stored in this browser only. Changes are not sent to Django.
-					</footer>
-				</div>
-			</div>
-			{notice && <div role="status" aria-live="polite" className="fixed bottom-4 right-4 z-50 max-w-[calc(100vw-2rem)] border border-hub-ink bg-hub-ink px-4 py-3 text-sm font-medium text-white shadow-lg">{notice}</div>}
-		</div>
+		<AppShell
+			navItems={visibleNav}
+			view={view}
+			currentUser={currentUser}
+			currentBranch={currentBranch}
+			isSuperAdmin={isSuperAdmin}
+			pageTitle={pageTitle}
+			busy={busy}
+			notice={notice}
+			onNavigate={navigate}
+			onSignOut={signOut}
+			onResetDemo={resetDemo}
+		>
+			{view === 'dashboard' && <DashboardScreen snapshot={snapshot} user={currentUser} busy={busy} onNavigate={navigate} onOpenCohort={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} onOpenSessions={openCohortSessions} onMarkNotificationRead={markNotificationRead} onPostAnnouncement={postAnnouncement} />}
+			{view === 'cohorts' && <CohortBoard cohorts={visibleCohorts} branches={visibleBranches} users={snapshot.users} isSuperAdmin={isSuperAdmin} canCreate={isSuperAdmin || currentUser.application_role === 'BRANCH_ADMIN'} onCreate={() => { setSelectedCohortId(null); setView('cohort-wizard') }} onOpen={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} />}
+			{view === 'cohort-wizard' && <CohortWizard cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} curricula={visibleCurricula} curriculumVersions={visibleCurriculumVersions} user={currentUser} busy={busy} onCancel={() => setView(selectedCohort ? 'cohort-detail' : 'cohorts')} onSave={saveCohort} />}
+			{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => mockApi.addStudent(cohortId, studentId, currentUser), 'Student enrolled in this demo.')} onRemoveStudent={(cohortId, studentId) => mutate(() => mockApi.removeStudent(cohortId, studentId, currentUser), 'Student removed from this demo.')} />}
+			{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
+			{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
+			{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} onIssueCertificates={issueCertificates} />}
+			{view === 'certificates' && currentUser.application_role === 'STUDENT' && <StudentCertificateScreen certificates={snapshot.certificates} />}
+			{view === 'users' && <UserManager users={snapshot.users} branches={visibleBranches} currentUser={currentUser} busy={busy} onSave={saveUser} />}
+			{view === 'curricula' && <CurriculumManager curricula={visibleCurricula} versions={visibleCurriculumVersions} branches={visibleBranches} user={currentUser} busy={busy} onCreate={createCurriculum} onUpdate={saveCurriculum} onCreateVersion={createCurriculumVersion} onSaveVersion={saveCurriculumVersion} onPublish={publishCurriculumVersion} />}
+			{view === 'branches' && isSuperAdmin && <BranchManager branches={snapshot.branches} users={snapshot.users} cohorts={snapshot.cohorts} busy={busy} onSave={saveBranch} />}
+			{view === 'branch-info' && !isSuperAdmin && <BranchInfo branch={currentBranch} users={snapshot.users} cohorts={visibleCohorts} />}
+			{view === 'cohort-detail' && !selectedCohort && <MissingCohort onBack={() => setView('cohorts')} />}
+		</AppShell>
 	)
-}
-
-function NavButton({ item, active, onClick, compact = false }) {
-	const Icon = item.icon
-	return (
-		<button type="button" onClick={onClick} aria-current={active ? 'page' : undefined} className={`flex min-h-10 shrink-0 items-center gap-3 px-3 text-left text-sm font-medium transition-colors ${compact ? 'min-h-9 px-3 text-xs' : 'w-full'} ${active ? 'bg-hub-purple text-white' : 'text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink'}`}>
-			<Icon size={17} aria-hidden="true" />{item.label}
-		</button>
-	)
-}
-
-function BrandMark() {
-	return <span className="grid size-8 shrink-0 place-items-center bg-hub-purple text-white"><Layers3 size={18} strokeWidth={2.2} aria-hidden="true" /></span>
-}
-
-function Avatar({ user, small = false }) {
-	const initials = `${user.first_name?.[0] ?? ''}${user.last_name?.[0] ?? ''}` || user.username.slice(0, 2)
-	return <span className={`grid shrink-0 place-items-center bg-hub-ink font-bold text-white ${small ? 'size-7 text-[10px]' : 'size-9 text-xs'}`}>{initials}</span>
-}
-
-function LoginScreen({ users, busy, error, onSignIn }) {
-	const superAdmin = users.find((user) => user.application_role === 'SUPER_ADMIN')
-	const branchAdmin = users.find((user) => user.application_role === 'BRANCH_ADMIN' && user.is_active)
-	const instructor = users.find((user) => user.application_role === 'INSTRUCTOR' && user.is_active)
-	const student = users.find((user) => user.application_role === 'STUDENT' && user.is_active)
-	return (
-		<main className="grid min-h-screen bg-white lg:grid-cols-[minmax(0,1fr)_430px]">
-			<section className="relative flex min-h-[42vh] flex-col justify-between overflow-hidden bg-hub-ink px-6 py-7 text-white sm:px-10 lg:min-h-screen lg:px-16 lg:py-12">
-				<div className="flex items-center gap-3"><BrandMark /><span className="font-bold">MembershipHub</span></div>
-				<div className="relative z-10 max-w-xl py-10 lg:py-0">
-					<p className="text-xs font-bold uppercase text-hub-yellow">Branch administration</p>
-					<h1 className="mt-4 max-w-lg text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">Every cohort, in the right place.</h1>
-					<p className="mt-4 max-w-md text-sm leading-6 text-white/75">Manage people, branches, and class rosters from one clear workspace.</p>
-				</div>
-				<div className="flex items-center gap-2 text-xs text-white/60"><ShieldCheck size={15} aria-hidden="true" />Role-scoped demo workspace</div>
-			</section>
-			<section className="flex items-center justify-center px-5 py-10 sm:px-8 lg:px-10">
-				<div className="w-full max-w-sm">
-					<span className="inline-flex min-h-7 items-center border border-[#e5d7e3] bg-[#fbf6fa] px-2 text-[10px] font-bold uppercase text-hub-purple">Local mock mode</span>
-					<h2 className="mt-5 text-2xl font-semibold tracking-tight">Choose a demo account</h2>
-					<p className="mt-2 text-sm leading-6 text-hub-muted">Sign in locally to explore the role-specific workspace. No backend connection is made.</p>
-					{error && <p role="alert" className="mt-5 border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">{error}</p>}
-					<div className="mt-7 divide-y divide-hub-line border-y border-hub-line">
-						{[superAdmin, branchAdmin, instructor, student].filter(Boolean).map((user) => {
-							const isSuperAdmin = user.application_role === 'SUPER_ADMIN'
-							const role = roleName(user.application_role)
-							return (
-								<button type="button" key={user.id} disabled={busy} onClick={() => onSignIn(user.id)} className="group flex min-h-[76px] w-full items-center gap-3 text-left hover:bg-[#fbf8fc] disabled:opacity-50">
-									<span className={`grid size-10 shrink-0 place-items-center ${isSuperAdmin ? 'bg-hub-ink text-white' : 'bg-[#f0e9f0] text-hub-purple'}`}>{isSuperAdmin ? <ShieldCheck size={18} aria-hidden="true" /> : user.application_role === 'INSTRUCTOR' ? <GraduationCap size={18} aria-hidden="true" /> : <Building2 size={18} aria-hidden="true" />}</span>
-									<span className="min-w-0 flex-1"><span className="block text-sm font-semibold">{role}</span><span className="mt-1 block truncate text-xs text-hub-muted">{user.first_name} {user.last_name} · {isSuperAdmin ? 'Organization-wide' : 'Central Fellowship'}</span></span>
-									<ChevronRight className="text-hub-muted transition-transform group-hover:translate-x-1 group-hover:text-hub-purple" size={18} aria-hidden="true" />
-								</button>
-							)
-						})}
-					</div>
-					<p className="mt-5 text-xs leading-5 text-hub-muted">This preview uses synthetic demo records and browser storage. Nothing is written to the Django API.</p>
-					<div className="mt-10 flex items-center gap-2 text-xs text-hub-muted"><CircleHelp size={15} aria-hidden="true" />Demo data can be reset from the workspace header.</div>
-				</div>
-			</section>
-		</main>
-	)
-}
-
-function LoadingScreen({ error }) {
-	return (
-		<main className="min-h-screen bg-[#f5f3f6] p-5 sm:p-8">
-			<div className="mx-auto max-w-4xl border-y border-hub-line bg-white p-5 sm:p-8">
-				<div className="flex items-center gap-3"><BrandMark /><div className="h-4 w-44 animate-pulse bg-[#e8e4e9]" /></div>
-				{error ? <p role="alert" className="mt-6 text-sm text-red-800">{error}</p> : <div className="mt-8 space-y-3" aria-label="Loading demo"><div className="h-8 w-1/3 animate-pulse bg-[#e8e4e9]" /><div className="h-14 animate-pulse bg-[#f2eff3]" /><div className="h-14 animate-pulse bg-[#f2eff3]" /></div>}
-			</div>
-		</main>
-	)
-}
-
-function MissingCohort({ onBack }) {
-	return <div className="border-y border-hub-line bg-white p-6"><h1 className="text-xl font-semibold">Cohort not found</h1><p className="mt-2 text-sm text-hub-muted">It may have been reset or removed from the local demo.</p><button type="button" onClick={onBack} className="mt-4 text-sm font-semibold text-hub-purple underline underline-offset-4">Back to cohorts</button></div>
 }
