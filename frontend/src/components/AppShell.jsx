@@ -2,7 +2,6 @@ import {
 	ChevronRight,
 	Layers3,
 	LogOut,
-	RotateCcw,
 } from 'lucide-react'
 import { displayName, roleName } from './userPresentation.js'
 
@@ -32,11 +31,9 @@ export function AppShell({
 	currentBranch,
 	isSuperAdmin,
 	pageTitle,
-	busy,
 	notice,
 	onNavigate,
 	onSignOut,
-	onResetDemo,
 }) {
 	const workspace = isSuperAdmin ? 'Organization' : currentBranch?.name ?? 'Branch unassigned'
 	const isActive = (item) => view === item.id || (view.startsWith('cohort-') && item.id === 'cohorts')
@@ -61,7 +58,7 @@ export function AppShell({
 							<Avatar user={currentUser} />
 							<div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{displayName(currentUser)}</p><p className="truncate text-xs text-hub-muted">{roleName(currentUser.application_role)}</p></div>
 						</div>
-						<button type="button" onClick={onSignOut} className="mt-4 flex min-h-9 w-full items-center gap-2 px-2 text-xs font-semibold text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink"><LogOut size={15} aria-hidden="true" />Sign out of demo</button>
+						<button type="button" onClick={onSignOut} className="mt-4 flex min-h-9 w-full items-center gap-2 px-2 text-xs font-semibold text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink"><LogOut size={15} aria-hidden="true" />Sign out</button>
 					</div>
 				</aside>
 
@@ -71,8 +68,6 @@ export function AppShell({
 							<div className="flex min-w-0 items-center gap-2 lg:hidden"><BrandMark /><span className="truncate text-xs font-bold">MembershipHub</span></div>
 							<div className="hidden min-w-0 items-center gap-2 text-xs text-hub-muted lg:flex"><span>{workspace}</span><ChevronRight size={14} aria-hidden="true" /><span className="font-semibold text-hub-ink">{pageTitle}</span></div>
 							<div className="ml-auto flex items-center gap-2 sm:gap-4">
-								<span className="inline-flex min-h-7 items-center gap-2 border border-[#e5d7e3] bg-[#fbf6fa] px-2 text-[10px] font-bold uppercase text-hub-purple"><span className="size-1.5 rounded-full bg-hub-purple" />Demo</span>
-								<button type="button" onClick={onResetDemo} disabled={busy} title="Reset local demo data" aria-label="Reset local demo data" className="grid size-9 place-items-center text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink disabled:opacity-50"><RotateCcw size={16} aria-hidden="true" /></button>
 								<button type="button" onClick={onSignOut} className="flex min-h-9 items-center gap-2 border-l border-hub-line pl-3 text-xs font-semibold text-hub-muted hover:text-hub-ink lg:hidden"><Avatar user={currentUser} small /><span className="sr-only">Sign out</span></button>
 							</div>
 						</div>
@@ -84,9 +79,6 @@ export function AppShell({
 					<main className="mx-auto min-h-[calc(100vh-118px)] w-full max-w-[1500px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
 						{children}
 					</main>
-					<footer className="border-t border-hub-line bg-white px-4 py-3 text-center text-[11px] text-hub-muted sm:px-6 lg:px-8">
-						Local demo data is stored in this browser only. Changes are not sent to Django.
-					</footer>
 				</div>
 			</div>
 			{notice && <div role="status" aria-live="polite" className="fixed bottom-4 right-4 z-50 max-w-[calc(100vw-2rem)] border border-hub-ink bg-hub-ink px-4 py-3 text-sm font-medium text-white shadow-lg">{notice}</div>}

@@ -51,6 +51,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "id": obj.branch.id,
             "name": obj.branch.name,
             "is_active": obj.branch.is_active,
+            "timezone": obj.branch.timezone,
         }
 
 

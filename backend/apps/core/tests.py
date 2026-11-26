@@ -4,7 +4,7 @@ from typing import cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -38,6 +38,28 @@ class AssessmentAPITests(APITestCase):
         self.student = User.objects.create_user(username="assessment-student", application_role=User.ApplicationRole.STUDENT, branch=self.branch)
         self.cohort = Cohort.objects.create(branch=self.branch, name="Assessment cohort", instructor=self.instructor)
         Enrollment.objects.create(cohort=self.cohort, student=self.student)
+
+    def test_instructor_can_only_read_assigned_cohorts(self):
+        other = Cohort.objects.create(branch=self.branch, name="Other cohort")
+        self.client.force_login(self.instructor)
+        response = self.client.get("/api/cohorts/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in response.json()], [self.cohort.pk])
+        self.assertEqual(self.client.get(f"/api/cohorts/{other.pk}/").status_code, 404)
+        self.assertEqual(self.client.patch(f"/api/cohorts/{self.cohort.pk}/", {"name": "Changed"}).status_code, 403)
+        self.assertEqual(self.client.post("/api/cohorts/", {"name": "Created"}).status_code, 403)
+
+    def test_session_login_and_mutation_with_csrf_cookie(self):
+        self.instructor.set_password("test-password-123")
+        self.instructor.save()
+        client = Client(enforce_csrf_checks=True)
+        response = client.get("/api/health/")
+        self.assertEqual(response.status_code, 200)
+        token = response.cookies["csrftoken"].value
+        response = client.post("/api/accounts/login/", {"username": self.instructor.username, "password": "test-password-123"}, HTTP_X_CSRFTOKEN=token)
+        self.assertEqual(response.status_code, 200)
+        token = client.cookies["csrftoken"].value
+        self.assertEqual(client.post("/api/accounts/logout/", HTTP_X_CSRFTOKEN=token).status_code, 204)
 
     def published_assessment(self, timing_mode=Assessment.TimingMode.WHOLE, count=1):
         bank = QuestionBank.objects.create(branch=self.branch)

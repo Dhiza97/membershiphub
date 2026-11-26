@@ -41,7 +41,7 @@ export function BranchManager({ branches, users, cohorts, busy, onSave }) {
 
   function startCreate() {
     setError('')
-    setEditing({ name: '', location: '', timezone: 'Africa/Accra', is_active: true })
+    setEditing({ name: '', timezone: 'Africa/Accra', is_active: true })
   }
 
   async function saveBranch(event) {
@@ -52,9 +52,8 @@ export function BranchManager({ branches, users, cohorts, busy, onSave }) {
       await onSave({
         id: editing.id,
         name: formData.get('name'),
-        location: formData.get('location'),
         timezone: formData.get('timezone'),
-        is_active: formData.get('is_active') === 'on',
+        is_active: editing.id ? formData.get('is_active') === 'on' : true,
       })
       setEditing(null)
     } catch (saveError) {
@@ -94,7 +93,6 @@ export function BranchManager({ branches, users, cohorts, busy, onSave }) {
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <FormInput label="Branch name" name="name" required maxLength={150} defaultValue={editing.name} placeholder="e.g. East Legon" />
-            <FormInput label="Location" name="location" defaultValue={editing.location} placeholder="City or neighborhood" />
             <FormInput label="IANA timezone" name="timezone" required maxLength={64} defaultValue={editing.timezone ?? 'Africa/Accra'} placeholder="Africa/Accra" />
           </div>
           {editing.id && <label className="mt-4 inline-flex min-h-10 items-center gap-2 text-sm"><input name="is_active" type="checkbox" defaultChecked={editing.is_active} className="size-4 accent-[#94007e]" />Branch is active</label>}
@@ -114,7 +112,7 @@ export function BranchManager({ branches, users, cohorts, busy, onSave }) {
               const cohortCount = cohorts.filter((cohort) => cohort.branch === branch.id).length
               return (
                 <tr key={branch.id} className={`border-t border-hub-line ${index % 2 ? 'bg-[#fcfbfc]' : 'bg-white'}`}>
-                  <td className="px-4 py-3.5"><span className="block truncate font-semibold">{branch.name}</span><span className="mt-1 block truncate text-xs text-hub-muted">{branch.location || 'Location not set'}</span></td>
+                  <td className="px-4 py-3.5"><span className="block truncate font-semibold">{branch.name}</span><span className="mt-1 block truncate text-xs text-hub-muted">{branch.timezone}</span></td>
                   <td className="px-4 py-3.5 text-sm tabular-nums">{countLabel(accountCount, 'account')}</td>
                   <td className="px-4 py-3.5 text-sm tabular-nums">{countLabel(cohortCount, 'cohort')}</td>
                   <td className="px-4 py-3.5"><span className={`inline-flex items-center gap-2 text-xs font-semibold ${branch.is_active ? 'text-emerald-800' : 'text-hub-muted'}`}><span className={`status-lamp ${branch.is_active ? 'status-lamp-on' : ''}`} />{branch.is_active ? 'Active' : 'Inactive'}</span></td>
@@ -148,7 +146,7 @@ export function BranchInfo({ branch, users, cohorts }) {
       {branch ? (
         <>
           <div className="grid gap-8 border-y border-hub-line bg-white p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-            <div><p className="text-xs font-semibold uppercase text-hub-muted">Branch</p><h2 className="mt-1 text-xl font-semibold">{branch.name}</h2><p className="mt-1 text-sm text-hub-muted">{branch.location || 'Location not set'}</p></div>
+            <div><p className="text-xs font-semibold uppercase text-hub-muted">Branch</p><h2 className="mt-1 text-xl font-semibold">{branch.name}</h2><p className="mt-1 text-sm text-hub-muted">{branch.timezone}</p></div>
             <span className={`inline-flex items-center gap-2 text-sm font-semibold ${branch.is_active ? 'text-emerald-800' : 'text-red-800'}`}><span className={`status-lamp ${branch.is_active ? 'status-lamp-on' : 'status-lamp-off'}`} />{branch.is_active ? 'Active' : 'Inactive'}</span>
           </div>
           <div className="grid gap-7 lg:grid-cols-2">
@@ -270,7 +268,6 @@ export function UserManager({ users, branches, currentUser, busy, onSave }) {
             {!editing.id && <FormInput label="Temporary password" name="password" type="password" required minLength={8} autoComplete="new-password" placeholder="At least 8 characters" />}
           </div>
           {editing.id && <label className="mt-4 inline-flex min-h-10 items-center gap-2 text-sm"><input name="is_active" type="checkbox" defaultChecked={editing.is_active} className="size-4 accent-[#94007e]" />Account is active</label>}
-          {!editing.id && <p className="mt-3 text-xs text-hub-muted">Demo only: passwords are not stored.</p>}
           <div className="mt-5 flex justify-end gap-2 border-t border-hub-line pt-4">
             <button type="button" onClick={() => setEditing(null)} className="min-h-10 px-3 text-sm font-semibold text-hub-muted">Cancel</button>
             <button type="submit" disabled={busy} className="inline-flex min-h-10 items-center gap-2 bg-hub-ink px-4 text-sm font-semibold text-white hover:bg-neutral-700 disabled:opacity-50"><Check size={16} aria-hidden="true" />Save account</button>

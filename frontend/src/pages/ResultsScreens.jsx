@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Archive, BadgeCheck, ClipboardCheck, Download, ExternalLink, Settings2 } from 'lucide-react'
-import { calculateGraduationReport } from '../services/mockApi.js'
+import { calculateGraduationReport } from '../services/api.js'
 import { downloadCertificatePdf } from '../services/certificatePdf.js'
 
 const primary = 'inline-flex min-h-10 items-center justify-center gap-2 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50'
@@ -91,7 +91,6 @@ function CohortResults({ snapshot, cohort, user, busy, onSaveRequirements, onFin
           <div className="flex flex-wrap gap-2"><a className={secondary} href={`/?verify=${encodeURIComponent(certificate.verification_code)}`} target="_blank" rel="noreferrer"><ExternalLink size={15} aria-hidden="true" />Verify</a><button type="button" className={secondary} onClick={() => downloadCertificatePdf(certificate)}><Download size={15} aria-hidden="true" />PDF</button></div>
         </article>)}
       </div>
-      <p className="text-xs text-hub-muted">Demo certificates are stored in this browser; production issuance uses the Django certificate API.</p>
     </section>}
   </div>
 }

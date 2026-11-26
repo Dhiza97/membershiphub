@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BadgeCheck, Download, ExternalLink, Search, ShieldCheck } from 'lucide-react'
-import { mockApi } from '../services/mockApi.js'
+import { api } from '../services/api.js'
 import { downloadCertificatePdf } from '../services/certificatePdf.js'
 
 const primary = 'inline-flex min-h-10 items-center justify-center gap-2 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50'
@@ -33,7 +33,6 @@ export function StudentCertificateScreen({ certificates }) {
       <h2 className="mt-3 font-semibold">No certificates yet</h2>
       <p className="mt-1 text-sm text-hub-muted">Certificates appear here after your cohort administrator issues one.</p>
     </div>}
-    <p className="text-xs text-hub-muted">Demo certificates are stored in this browser. Downloaded PDFs include a public verification link.</p>
   </section>
 }
 
@@ -42,12 +41,16 @@ export function PublicCertificateVerification({ initialReference = '' }) {
   const [result, setResult] = useState(null)
   const [checked, setChecked] = useState(false)
   const [busy, setBusy] = useState(Boolean(initialReference))
+  const [error, setError] = useState('')
 
   async function verify(value) {
     setBusy(true)
     setChecked(false)
+    setError('')
     try {
-      setResult(await mockApi.verifyCertificate(value))
+      setResult(await api.verifyCertificate(value))
+    } catch (failure) {
+      setError(failure.message)
     } finally {
       setChecked(true)
       setBusy(false)
@@ -57,13 +60,13 @@ export function PublicCertificateVerification({ initialReference = '' }) {
   useEffect(() => {
     if (!initialReference) return undefined
     let active = true
-    mockApi.verifyCertificate(initialReference).then((value) => {
+    api.verifyCertificate(initialReference).then((value) => {
       if (active) {
         setResult(value)
         setChecked(true)
         setBusy(false)
       }
-    })
+    }).catch((failure) => { if (active) { setError(failure.message); setBusy(false) } })
     return () => { active = false }
   }, [initialReference])
 
@@ -82,7 +85,8 @@ export function PublicCertificateVerification({ initialReference = '' }) {
           <label className="text-xs font-semibold text-hub-muted">Verification reference<input className={input} required value={reference} onChange={(event) => setReference(event.target.value)} autoComplete="off" /></label>
           <button type="submit" className={primary} disabled={busy || !reference.trim()}><Search size={16} aria-hidden="true" />{busy ? 'Checking…' : 'Verify'}</button>
         </form>
-        {checked && (result ? <div role="status" className="border-y border-emerald-300 bg-emerald-50 px-4 py-4">
+        {error && <p role="alert" className="border-y border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">{error}</p>}
+        {checked && !error && (result ? <div role="status" className="border-y border-emerald-300 bg-emerald-50 px-4 py-4">
           <p className="flex items-center gap-2 font-semibold text-emerald-950"><BadgeCheck size={18} aria-hidden="true" />Certificate is valid</p>
           <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
             <div><dt className="text-xs text-hub-muted">Recipient</dt><dd className="mt-0.5 font-semibold">{result.recipient_name}</dd></div>
@@ -92,7 +96,6 @@ export function PublicCertificateVerification({ initialReference = '' }) {
             <div><dt className="text-xs text-hub-muted">Date issued</dt><dd className="mt-0.5">{new Date(result.issued_at).toLocaleDateString()}</dd></div>
           </dl>
         </div> : <p role="status" className="border-y border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">No matching certificate was found. Check the reference and try again.</p>)}
-        <p className="text-xs text-hub-muted">This demo checks certificates stored in this browser only; it is not connected to the public Django verification API.</p>
       </div>
     </section>
   </main>

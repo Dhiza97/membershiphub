@@ -843,10 +843,7 @@ export function StudentAssessments({
   const assessment = snapshot.assessments.find(
     (item) => item.id === attempt?.assessment,
   );
-  const question =
-    attempt?.status === "IN_PROGRESS"
-      ? assessment?.questions[attempt.current_question]
-      : null;
+  const question = attempt?.status === "IN_PROGRESS" ? attempt.question : null;
   const selectionKey = `${attemptId}-${question?.id}`;
   const selected =
     selections[selectionKey] ??
@@ -857,9 +854,11 @@ export function StudentAssessments({
   const inProgress = attempt?.status === "IN_PROGRESS";
   useEffect(() => {
     if (!inProgress) return undefined;
+    let ticks = 0;
     const timer = window.setInterval(() => {
       setNow(Date.now());
-      onRefresh();
+      ticks += 1;
+      if (ticks % 5 === 0) onRefresh().catch((failure) => setError(failure.message));
     }, 1000);
     return () => window.clearInterval(timer);
   }, [inProgress, onRefresh]);
@@ -909,7 +908,7 @@ export function StudentAssessments({
           <div className="space-y-5 border-y border-hub-line bg-white p-5">
             <p className="text-xs font-semibold text-hub-muted">
               Question {attempt.current_question + 1} of{" "}
-              {assessment.questions.length}
+              {attempt.question_count}
             </p>
             <h2 className="text-lg font-semibold">{question.prompt}</h2>
             <div className="space-y-2">
@@ -953,7 +952,7 @@ export function StudentAssessments({
                   )
                 }
               >
-                {attempt.current_question === assessment.questions.length - 1
+                {attempt.current_question === attempt.question_count - 1
                   ? "Submit assessment"
                   : "Save and continue"}
               </button>
@@ -1003,35 +1002,6 @@ export function StudentAssessments({
                 ? `Score: ${attempt.score} / ${attempt.max_score}`
                 : "Your results are awaiting release."}
             </p>
-            {assessment.results_released &&
-              assessment.questions.map((item) => (
-                <div key={item.id} className="border-t border-hub-line pt-4">
-                  <p className="text-sm font-semibold">{item.prompt}</p>
-                  <p className="mt-2 text-sm">
-                    Your answer:{" "}
-                    {item.options
-                      .filter((option) =>
-                        (attempt.answers[item.id] ?? []).includes(option.id),
-                      )
-                      .map((option) => option.text)
-                      .join(", ") || "No answer"}
-                  </p>
-                  <p className="mt-1 text-sm">
-                    Correct:{" "}
-                    {item.options
-                      .filter((option) =>
-                        item.correct_option_ids.includes(option.id),
-                      )
-                      .map((option) => option.text)
-                      .join(", ")}
-                  </p>
-                  {item.explanation && (
-                    <p className="mt-1 text-sm text-hub-muted">
-                      {item.explanation}
-                    </p>
-                  )}
-                </div>
-              ))}
           </div>
         )}
       </div>
@@ -1069,7 +1039,7 @@ export function StudentAssessments({
                   <p className="text-sm font-semibold">{item.title}</p>
                   <p className="mt-1 text-xs text-hub-muted">
                     {item.assessment_type === "EXAM" ? "Examination" : "Quiz"} ·{" "}
-                    {item.questions.length} questions · {attempts.length} of{" "}
+                    {item.question_count} questions · {attempts.length} of{" "}
                     {item.attempt_limit} attempts used
                   </p>
                   <div className="mt-2 flex flex-wrap gap-3">

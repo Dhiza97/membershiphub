@@ -41,35 +41,6 @@ function statusStyle(status) {
   return 'bg-hub-yellow text-hub-ink'
 }
 
-function calculateReport(cohort, sessions, attendance) {
-  const completed = sessions.filter((session) => session.status === 'COMPLETED')
-  const students = cohort.students.map((studentId) => {
-    const records = attendance.filter((record) => (
-      completed.some((session) => session.id === record.session)
-      && record.student === studentId
-    ))
-    const excused = records.filter((record) => record.status === 'EXCUSED').length
-    const attended = records.filter((record) => ['PRESENT', 'LATE'].includes(record.status)).length
-    const denominator = Math.max(0, completed.length - excused)
-    return {
-      studentId,
-      records,
-      excused,
-      attended,
-      completedSessions: completed.length,
-      denominator,
-      percentage: denominator ? Math.round((attended / denominator) * 1000) / 10 : null,
-    }
-  })
-  const totalAttended = students.reduce((sum, student) => sum + student.attended, 0)
-  const totalDenominator = students.reduce((sum, student) => sum + student.denominator, 0)
-  return {
-    completedCount: completed.length,
-    students,
-    percentage: totalDenominator ? Math.round((totalAttended / totalDenominator) * 1000) / 10 : null,
-  }
-}
-
 function Field({ label, className = '', ...props }) {
   return <label className={`block text-sm font-medium ${className}`}>{label}<input className="mt-1.5 min-h-11 w-full border border-hub-line bg-white px-3 text-sm font-normal text-hub-ink focus:border-hub-purple focus:outline-none focus:ring-2 focus:ring-hub-purple/15" {...props} /></label>
 }
@@ -78,7 +49,7 @@ function SelectField({ label, children, ...props }) {
   return <label className="relative block text-sm font-medium">{label}<select className="mt-1.5 min-h-11 w-full appearance-none border border-hub-line bg-white px-3 pr-9 text-sm font-normal focus:border-hub-purple focus:outline-none focus:ring-2 focus:ring-hub-purple/15" {...props}>{children}</select><ChevronDown className="pointer-events-none absolute bottom-3 right-3 text-hub-muted" size={16} aria-hidden="true" /></label>
 }
 
-export function SessionManager({ cohort, sessions, users, branches, attendance, currentUser, busy, onBack, onSaveSession, onRecordAttendance }) {
+export function SessionManager({ cohort, sessions, users, branches, attendance, attendanceReport, currentUser, busy, onBack, onSaveSession, onRecordAttendance }) {
   const [selectedSessionId, setSelectedSessionId] = useState(null)
   const [creating, setCreating] = useState(false)
   const [editingSession, setEditingSession] = useState(null)
@@ -91,7 +62,11 @@ export function SessionManager({ cohort, sessions, users, branches, attendance, 
   const canEdit = currentUser.application_role === 'SUPER_ADMIN'
     || currentUser.application_role === 'BRANCH_ADMIN'
     || (currentUser.application_role === 'INSTRUCTOR' && currentUser.id === cohort.instructor)
-  const report = calculateReport(cohort, sessions, attendance)
+  const report = attendanceReport && {
+    completedCount: attendanceReport.completed_session_count,
+    percentage: attendanceReport.attendance_percentage,
+    students: attendanceReport.students.map((row) => ({ studentId: row.student.id, attended: row.attended_sessions, excused: row.excused_sessions, completedSessions: row.completed_sessions, denominator: row.completed_sessions - row.excused_sessions, percentage: row.attendance_percentage })),
+  }
 
   async function saveSession(input) {
     setError('')
@@ -145,7 +120,7 @@ export function SessionManager({ cohort, sessions, users, branches, attendance, 
         />
       )}
 
-      {showReport && <AttendanceReport cohort={cohort} sessions={sessions} users={users} report={report} attendance={attendance} />}
+      {showReport && report && <AttendanceReport cohort={cohort} sessions={sessions} users={users} report={report} attendance={attendance} />}
 
       {!selectedSession && !showReport && !creating && (
         <div className="divide-y divide-hub-line border-y border-hub-line bg-white">

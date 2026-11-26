@@ -19,7 +19,7 @@ import { AssessmentManager, StudentAssessments } from './pages/AssessmentScreens
 import { ResultsManager } from './pages/ResultsScreens.jsx'
 import { PublicCertificateVerification, StudentCertificateScreen } from './pages/CertificateScreens.jsx'
 import { DashboardScreen } from './pages/DashboardScreens.jsx'
-import { mockApi } from './services/mockApi.js'
+import { api } from './services/api.js'
 
 const NAV_ITEMS = {
 	SUPER_ADMIN: [
@@ -76,19 +76,19 @@ export default function App() {
 	const [loadError, setLoadError] = useState('')
 	const verificationReference = new URLSearchParams(window.location.search).get('verify')
 	const refreshAssessment = useCallback(async () => {
-		setSnapshot(await mockApi.snapshot())
+		setSnapshot(await api.snapshot())
 	}, [])
 
 	useEffect(() => {
 		let active = true
-		mockApi.snapshot()
+		api.snapshot()
 			.then((data) => {
 				if (active) {
 					setSnapshot(data)
 				}
 			})
-			.catch(() => {
-				if (active) setLoadError('The local demo could not load. Refresh the page to try again.')
+			.catch((error) => {
+				if (active) setLoadError(`Unable to connect to the server: ${error.message}`)
 			})
 		return () => { active = false }
 	}, [])
@@ -115,11 +115,11 @@ export default function App() {
 		}
 	}
 
-	async function signIn(userId) {
+	async function signIn(credentials) {
 		setBusy(true)
 		setLoadError('')
 		try {
-			const data = await mockApi.signIn(userId)
+			const data = await api.signIn(credentials)
 			setSnapshot(data)
 			setView('dashboard')
 		} catch (error) {
@@ -130,21 +130,9 @@ export default function App() {
 	}
 
 	async function signOut() {
-		setSnapshot(await mockApi.signOut())
+		setSnapshot(await api.signOut())
 		setView('dashboard')
 		setSelectedCohortId(null)
-	}
-
-	async function resetDemo() {
-		setBusy(true)
-		try {
-			setSnapshot(await mockApi.resetDemo())
-			setView('dashboard')
-			setSelectedCohortId(null)
-			setNotice('Demo data reset to its starting state.')
-		} finally {
-			setBusy(false)
-		}
 	}
 
 	if (!snapshot) {
@@ -153,7 +141,7 @@ export default function App() {
 
 	const currentUser = snapshot.currentUser
 	if (!currentUser) {
-		return <LoginScreen users={snapshot.users} busy={busy} error={loadError} onSignIn={signIn} />
+		return <LoginScreen busy={busy} error={loadError} onSignIn={signIn} />
 	}
 
 	const isSuperAdmin = currentUser.application_role === 'SUPER_ADMIN'
@@ -170,7 +158,7 @@ export default function App() {
 	const selectedCohort = snapshot.cohorts.find((cohort) => cohort.id === selectedCohortId)
 
 	async function saveCohort(input) {
-		const data = await mutate(() => mockApi.saveCohort(input, currentUser), input.status === 'READY' ? 'Cohort marked Ready in this demo.' : 'Draft saved in this demo.')
+		const data = await mutate(() => api.saveCohort(input, currentUser), input.status === 'READY' ? 'Cohort marked Ready.' : 'Draft saved.')
 		const saved = input.id
 			? data.cohorts.find((cohort) => cohort.id === input.id)
 			: data.cohorts.reduce((latest, cohort) => cohort.id > latest.id ? cohort : latest, data.cohorts[0])
@@ -179,21 +167,21 @@ export default function App() {
 	}
 
 	async function updateCohort(input) {
-		await mutate(() => mockApi.saveCohort(input, currentUser), 'Cohort updated in this demo.')
+		await mutate(() => api.saveCohort(input, currentUser), 'Cohort updated.')
 	}
 
 	async function saveUser(input) {
-		await mutate(() => mockApi.saveUser(input, currentUser), input.id ? 'Account updated in this demo.' : 'Account registered in this demo.')
+		await mutate(() => api.saveUser(input, currentUser), input.id ? 'Account updated.' : 'Account registered.')
 	}
 
 	async function saveBranch(input) {
-		await mutate(() => mockApi.saveBranch(input), input.id ? 'Branch updated in this demo.' : 'Branch created in this demo.')
+		await mutate(() => api.saveBranch(input), input.id ? 'Branch updated.' : 'Branch created.')
 	}
 
 	async function saveCurriculum(input) {
 		const data = await mutate(
-			() => mockApi.saveCurriculum(input, currentUser),
-			input.id ? 'Curriculum details saved in this demo.' : 'Curriculum and initial draft created in this demo.',
+			() => api.saveCurriculum(input, currentUser),
+			input.id ? 'Curriculum details saved.' : 'Curriculum and initial draft created.',
 		)
 		return data.curricula.find((curriculum) => (
 			curriculum.branch === (currentUser.application_role === 'BRANCH_ADMIN' ? currentUser.branch : Number(input.branch))
@@ -203,8 +191,8 @@ export default function App() {
 
 	async function createCurriculum(input) {
 		const data = await mutate(
-			() => mockApi.saveCurriculum(input, currentUser),
-			'Curriculum and initial draft created in this demo.',
+			() => api.saveCurriculum(input, currentUser),
+			'Curriculum and initial draft created.',
 		)
 		const branchId = currentUser.application_role === 'BRANCH_ADMIN' ? currentUser.branch : Number(input.branch)
 		return data.curricula.find((curriculum) => (
@@ -214,21 +202,21 @@ export default function App() {
 	}
 
 	async function createCurriculumVersion(curriculumId, changeNote) {
-		await mutate(() => mockApi.createCurriculumVersion(curriculumId, changeNote, currentUser), 'New editable version created in this demo.')
+		await mutate(() => api.createCurriculumVersion(curriculumId, changeNote, currentUser), 'New editable version created.')
 	}
 
 	async function saveCurriculumVersion(curriculumId, versionId, input) {
-		await mutate(() => mockApi.saveCurriculumVersion(curriculumId, versionId, input, currentUser), 'Curriculum draft saved in this demo.')
+		await mutate(() => api.saveCurriculumVersion(curriculumId, versionId, input, currentUser), 'Curriculum draft saved.')
 	}
 
 	async function publishCurriculumVersion(curriculumId, versionId) {
-		await mutate(() => mockApi.publishCurriculumVersion(curriculumId, versionId, currentUser), 'Curriculum version published in this demo.')
+		await mutate(() => api.publishCurriculumVersion(curriculumId, versionId, currentUser), 'Curriculum version published.')
 	}
 
 	async function saveSession(input) {
 		const data = await mutate(
-			() => mockApi.saveSession(input, currentUser),
-			input.id ? 'Session updated in this demo.' : 'Session scheduled in this demo.',
+			() => api.saveSession(input, currentUser),
+			input.id ? 'Session updated.' : 'Session scheduled.',
 		)
 		return data.sessions.find((session) => session.id === input.id)
 			?? data.sessions.reduce((latest, session) => session.id > latest.id ? session : latest, data.sessions[0])
@@ -236,33 +224,25 @@ export default function App() {
 
 	async function recordAttendance(sessionId, studentId, input) {
 		await mutate(
-			() => mockApi.setAttendance(sessionId, studentId, input, currentUser),
-			'Attendance saved in this demo.',
+			() => api.setAttendance(sessionId, studentId, input, currentUser),
+			'Attendance saved.',
 		)
 	}
 
 	async function assessmentAction(method, ...args) {
-		return mutate(() => mockApi[method](...args, currentUser), '')
+		return mutate(() => api[method](...args, currentUser), '')
 	}
 
 	async function saveGraduationRequirements(cohortId, input) {
-		return mutate(() => mockApi.saveGraduationRequirements(cohortId, input, currentUser), 'Graduation requirements saved.')
+		return mutate(() => api.saveGraduationRequirements(cohortId, input, currentUser), 'Graduation requirements saved.')
 	}
 
 	async function finalizeGraduationResults(cohortId) {
-		return mutate(() => mockApi.finalizeGraduationResults(cohortId, currentUser), 'Results finalized.')
+		return mutate(() => api.finalizeGraduationResults(cohortId, currentUser), 'Results finalized.')
 	}
 
 	async function issueCertificates(cohortId, studentIds) {
-		return mutate(() => mockApi.issueCertificates(cohortId, studentIds, currentUser), 'Certificates issued in this demo.')
-	}
-
-	async function markNotificationRead(notificationId) {
-		return mutate(() => mockApi.markNotificationRead(notificationId, currentUser), 'Notification marked as read.')
-	}
-
-	async function postAnnouncement(input) {
-		return mutate(() => mockApi.postAnnouncement(input, currentUser), 'Announcement published in this demo.')
+		return mutate(() => api.issueCertificates(cohortId, studentIds, currentUser), 'Certificates issued.')
 	}
 
 	function openCohortSessions(cohortId) {
@@ -290,13 +270,12 @@ export default function App() {
 			notice={notice}
 			onNavigate={navigate}
 			onSignOut={signOut}
-			onResetDemo={resetDemo}
 		>
-			{view === 'dashboard' && <DashboardScreen snapshot={snapshot} user={currentUser} busy={busy} onNavigate={navigate} onOpenCohort={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} onOpenSessions={openCohortSessions} onMarkNotificationRead={markNotificationRead} onPostAnnouncement={postAnnouncement} />}
+			{view === 'dashboard' && <DashboardScreen snapshot={snapshot} user={currentUser} onNavigate={navigate} onOpenCohort={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} onOpenSessions={openCohortSessions} />}
 			{view === 'cohorts' && <CohortBoard cohorts={visibleCohorts} branches={visibleBranches} users={snapshot.users} isSuperAdmin={isSuperAdmin} canCreate={isSuperAdmin || currentUser.application_role === 'BRANCH_ADMIN'} onCreate={() => { setSelectedCohortId(null); setView('cohort-wizard') }} onOpen={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} />}
 			{view === 'cohort-wizard' && <CohortWizard cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} curricula={visibleCurricula} curriculumVersions={visibleCurriculumVersions} user={currentUser} busy={busy} onCancel={() => setView(selectedCohort ? 'cohort-detail' : 'cohorts')} onSave={saveCohort} />}
-			{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => mockApi.addStudent(cohortId, studentId, currentUser), 'Student enrolled in this demo.')} onRemoveStudent={(cohortId, studentId) => mutate(() => mockApi.removeStudent(cohortId, studentId, currentUser), 'Student removed from this demo.')} />}
-			{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
+			{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => api.addStudent(cohortId, studentId, currentUser), 'Student enrolled.')} onRemoveStudent={(cohortId, studentId) => mutate(() => api.removeStudent(cohortId, studentId, currentUser), 'Student removed.')} />}
+			{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} attendanceReport={snapshot.attendanceReports.find((report) => report.cohort.id === selectedCohort.id)} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
 			{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
 			{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} onIssueCertificates={issueCertificates} />}
 			{view === 'certificates' && currentUser.application_role === 'STUDENT' && <StudentCertificateScreen certificates={snapshot.certificates} />}

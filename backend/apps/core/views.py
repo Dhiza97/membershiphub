@@ -10,7 +10,8 @@ from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
-from rest_framework.decorators import api_view
+from django.views.decorators.csrf import ensure_csrf_cookie
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
@@ -71,7 +72,9 @@ from .serializers import (
 )
 
 
+@ensure_csrf_cookie
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def health_check(_request):  # pyright: ignore[reportUnusedParameter]
     return Response({
         "status": "ok",
@@ -163,8 +166,12 @@ class CohortScopeMixin:
 
 
 class CohortListCreateView(CohortScopeMixin, ListCreateAPIView):
-    permission_classes = (IsAuthenticated, IsCohortManager)
     serializer_class = CohortSerializer
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsAuthenticated(), IsSessionOperator()]
+        return [IsAuthenticated(), IsCohortManager()]
 
     def get_queryset(self) -> QuerySet[Cohort]:  # pyright: ignore[reportIncompatibleMethodOverride]
         queryset = self.get_cohort_queryset()
@@ -188,8 +195,12 @@ class CohortListCreateView(CohortScopeMixin, ListCreateAPIView):
 
 
 class CohortDetailView(CohortScopeMixin, RetrieveUpdateAPIView):
-    permission_classes = (IsAuthenticated, IsCohortManager)
     serializer_class = CohortSerializer
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsAuthenticated(), IsSessionOperator()]
+        return [IsAuthenticated(), IsCohortManager()]
 
     def get_queryset(self) -> QuerySet[Cohort]:  # pyright: ignore[reportIncompatibleMethodOverride]
         return self.get_cohort_queryset()

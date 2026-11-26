@@ -1,18 +1,15 @@
 import { useState } from 'react'
 import {
   ArrowRight,
-  Bell,
   CalendarDays,
   CheckCircle2,
   ClipboardList,
   GraduationCap,
-  Megaphone,
   UsersRound,
 } from 'lucide-react'
-import { calculateGraduationReport } from '../services/mockApi.js'
+import { calculateGraduationReport } from '../services/api.js'
 
 const input = 'mt-1 min-h-10 w-full border border-hub-line bg-white px-3 text-sm text-hub-ink'
-const primary = 'inline-flex min-h-10 items-center justify-center gap-2 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50'
 const secondary = 'inline-flex min-h-9 items-center justify-center gap-2 border border-hub-line bg-white px-3 text-xs font-semibold hover:border-hub-purple disabled:opacity-50'
 const statusNames = { DRAFT: 'Draft', READY: 'Ready', ACTIVE: 'Active', COMPLETED: 'Completed', ARCHIVED: 'Archived' }
 
@@ -34,25 +31,14 @@ function inScopeAssessment(assessment, cohort, snapshot) {
 }
 
 function getAttendanceSummary(snapshot, cohortIds, studentId = null) {
-  const completedSessions = snapshot.sessions.filter((session) => (
-    cohortIds.has(session.cohort) && session.status === 'COMPLETED'
-  ))
-  const completedSessionIds = new Set(completedSessions.map((session) => session.id))
-  const records = snapshot.attendance.filter((record) => (
-    completedSessionIds.has(record.session) && (studentId == null || record.student === studentId)
-  ))
-  const attended = records.filter((record) => ['PRESENT', 'LATE'].includes(record.status)).length
-  const excused = records.filter((record) => record.status === 'EXCUSED').length
-  const eligibleAttendanceSlots = completedSessions.reduce((total, session) => {
-    const cohort = snapshot.cohorts.find((item) => item.id === session.cohort)
-    if (!cohort) return total
-    return total + (studentId == null ? cohort.students.length : Number(cohort.students.includes(studentId)))
-  }, 0)
-  const denominator = eligibleAttendanceSlots - excused
+  const rows = snapshot.attendanceReports.filter((report) => cohortIds.has(report.cohort.id))
+    .flatMap((report) => report.students.filter((row) => studentId == null || row.student.id === studentId))
+  const attended = rows.reduce((total, row) => total + row.attended_sessions, 0)
+  const excused = rows.reduce((total, row) => total + row.excused_sessions, 0)
+  const denominator = rows.reduce((total, row) => total + row.completed_sessions - row.excused_sessions, 0)
   return {
     attended,
     excused,
-    recorded: records.length,
     percentage: denominator ? Math.round(attended * 1000 / denominator) / 10 : null,
   }
 }
@@ -130,59 +116,22 @@ function SessionRows({ sessions, query, onOpenSessions, canRecord = false }) {
   </div>
 }
 
-function NotificationAndAnnouncementPanels({ snapshot, user, query, busy, onMarkRead, onPostAnnouncement }) {
-  const [composerOpen, setComposerOpen] = useState(false)
-  const [announcementError, setAnnouncementError] = useState('')
-  const [announcement, setAnnouncement] = useState({ title: '', body: '', branch: '' })
-  const canAnnounce = ['SUPER_ADMIN', 'BRANCH_ADMIN'].includes(user.application_role)
-  const normalizedQuery = query.trim().toLowerCase()
-  const notifications = snapshot.notifications.filter((item) => `${item.title} ${item.body}`.toLowerCase().includes(normalizedQuery))
-  const announcements = snapshot.announcements.filter((item) => `${item.title} ${item.body}`.toLowerCase().includes(normalizedQuery))
-
-  async function submitAnnouncement(event) {
-    event.preventDefault()
-    setAnnouncementError('')
-    try {
-      await onPostAnnouncement({ ...announcement, branch: announcement.branch === '' ? null : Number(announcement.branch) })
-      setAnnouncement({ title: '', body: '', branch: '' })
-      setComposerOpen(false)
-    } catch (failure) {
-      setAnnouncementError(failure.message)
-    }
-  }
-
-  return <div className="grid gap-8 xl:grid-cols-2">
-    <Section title="Notifications" icon={Bell}>
-      {notifications.length ? <div className="divide-y divide-hub-line border-y border-hub-line bg-white">
-        {notifications.map((item) => <article key={item.id} className="flex items-start justify-between gap-3 px-3 py-3">
-          <div className="min-w-0"><div className="flex items-center gap-2"><p className="text-sm font-semibold">{item.title}</p>{!item.read && <span className="size-2 shrink-0 bg-hub-purple" aria-label="Unread" />}</div><p className="mt-1 text-sm text-hub-muted">{item.body}</p><p className="mt-1 text-xs text-hub-muted">{new Date(item.created_at).toLocaleDateString()}</p></div>
-          {!item.read && <button type="button" className={secondary} disabled={busy} onClick={() => onMarkRead(item.id)}>Mark read</button>}
-        </article>)}
-      </div> : <EmptyLine>No notifications match your search.</EmptyLine>}
-    </Section>
-
-    <Section title="Announcements" icon={Megaphone} action={canAnnounce && <button type="button" className={secondary} onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? 'Cancel' : 'New announcement'}</button>}>
-      {composerOpen && <form className="mb-4 space-y-3 border-y border-hub-line bg-white p-4" onSubmit={submitAnnouncement}>
-        <label className="block text-xs font-semibold text-hub-muted">Announcement title<input className={input} required maxLength={140} value={announcement.title} onChange={(event) => setAnnouncement({ ...announcement, title: event.target.value })} /></label>
-        <label className="block text-xs font-semibold text-hub-muted">Message<textarea className={`${input} py-2`} rows="3" required maxLength={1200} value={announcement.body} onChange={(event) => setAnnouncement({ ...announcement, body: event.target.value })} /></label>
-        {user.application_role === 'SUPER_ADMIN' && <label className="block text-xs font-semibold text-hub-muted">Audience<select className={input} value={announcement.branch} onChange={(event) => setAnnouncement({ ...announcement, branch: event.target.value })}><option value="">All branches</option>{snapshot.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}
-        {announcementError && <p role="alert" className="text-sm text-red-800">{announcementError}</p>}
-        <button type="submit" className={primary} disabled={busy}>Publish announcement</button>
-      </form>}
-      {announcements.length ? <div className="divide-y divide-hub-line border-y border-hub-line bg-white">
-        {announcements.map((item) => <article key={item.id} className="px-3 py-3">
-          <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="text-sm font-semibold">{item.title}</h3><span className="text-xs text-hub-muted">{item.branch == null ? 'All branches' : snapshot.branches.find((branch) => branch.id === item.branch)?.name ?? 'Branch'} · {new Date(item.published_at).toLocaleDateString()}</span></div>
-          <p className="mt-1 whitespace-pre-wrap text-sm text-hub-muted">{item.body}</p>
-        </article>)}
-      </div> : <EmptyLine>No announcements match your search.</EmptyLine>}
-    </Section>
-  </div>
-}
-
-export function DashboardScreen({ snapshot, user, busy, onNavigate, onOpenCohort, onOpenSessions, onMarkNotificationRead, onPostAnnouncement }) {
+export function DashboardScreen({ snapshot, user, onNavigate, onOpenCohort, onOpenSessions }) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const role = user.application_role
+  if (role === 'STUDENT') return <div className="space-y-7">
+    <header className="border-b border-hub-line pb-5"><h1 className="text-2xl font-semibold">My learning dashboard</h1><p className="mt-1 text-sm text-hub-muted">{displayName(user)}</p></header>
+    <MetricStrip metrics={[{ label: 'Assessments', value: snapshot.assessments.length }, { label: 'Certificates', value: snapshot.certificates.length }]} />
+    <div className="grid gap-8 xl:grid-cols-2">
+      <Section title="My assessments" icon={ClipboardList} action={<button type="button" className={secondary} onClick={() => onNavigate('assessments')}>View assessments <ArrowRight size={14} /></button>}>
+        {snapshot.assessments.length ? <div className="divide-y divide-hub-line border-y border-hub-line bg-white">{snapshot.assessments.map((assessment) => <div key={assessment.id} className="px-3 py-3"><p className="text-sm font-semibold">{assessment.title}</p><p className="mt-1 text-xs text-hub-muted">{assessment.my_attempts} of {assessment.attempt_limit} attempts used</p></div>)}</div> : <EmptyLine>No assessments are available yet.</EmptyLine>}
+      </Section>
+      <Section title="My certificates" icon={CheckCircle2} action={<button type="button" className={secondary} onClick={() => onNavigate('certificates')}>View certificates <ArrowRight size={14} /></button>}>
+        {snapshot.certificates.length ? <div className="divide-y divide-hub-line border-y border-hub-line bg-white">{snapshot.certificates.map((certificate) => <div key={certificate.id} className="px-3 py-3"><p className="text-sm font-semibold">{certificate.cohort_name}</p><p className="mt-1 text-xs text-hub-muted">{certificate.certificate_number}</p></div>)}</div> : <EmptyLine>No certificates have been issued yet.</EmptyLine>}
+      </Section>
+    </div>
+  </div>
   const cohorts = role === 'SUPER_ADMIN'
     ? snapshot.cohorts
     : role === 'INSTRUCTOR'
@@ -225,7 +174,7 @@ export function DashboardScreen({ snapshot, user, busy, onNavigate, onOpenCohort
     const summary = getAttendanceSummary(snapshot, branchIds)
     const uniqueStudents = new Set(branchCohortsForRow.flatMap((cohort) => cohort.students)).size
     return { ...branch, cohorts: branchCohortsForRow, student_count: uniqueStudents, active_count: branchCohortsForRow.filter((cohort) => cohort.status === 'ACTIVE').length, attendance: summary.percentage }
-  }).filter((branch) => `${branch.name} ${branch.location}`.toLowerCase().includes(query.trim().toLowerCase())) : []
+  }).filter((branch) => branch.name.toLowerCase().includes(query.trim().toLowerCase())) : []
   const studentCohort = cohorts.find((cohort) => cohort.status === 'ACTIVE') ?? cohorts[0]
   const studentReport = studentCohort ? reports.find((row) => row.cohort_id === studentCohort.id) : null
   const studentAssessmentResults = scopedAttempts
@@ -361,6 +310,5 @@ export function DashboardScreen({ snapshot, user, busy, onNavigate, onOpenCohort
       </Section>
     </div>}
 
-    <NotificationAndAnnouncementPanels snapshot={snapshot} user={user} query={query} busy={busy} onMarkRead={onMarkNotificationRead} onPostAnnouncement={onPostAnnouncement} />
   </div>
 }
