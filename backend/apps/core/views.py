@@ -3,14 +3,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 from datetime import timedelta
 from decimal import Decimal
+from io import BytesIO
 
+from django.http import FileResponse
 from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from rest_framework.decorators import api_view
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateAPIView
-from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -26,6 +29,7 @@ from .models import (
     AssessmentAttempt,
     AssessmentQuestion,
     Branch,
+    Certificate,
     Cohort,
     Curriculum,
     CurriculumLesson,
@@ -33,12 +37,15 @@ from .models import (
     CurriculumTopic,
     CurriculumVersion,
     Enrollment,
+    GraduationRequirements,
+    GraduationResultSnapshot,
     LearningMaterial,
     Question,
     QuestionBank,
     QuestionOption,
     Session,
 )
+from .certificates import render_certificate_pdf
 from .serializers import (
     AttendanceCreateSerializer,
     AttendanceSerializer,
@@ -49,6 +56,7 @@ from .serializers import (
     AssessmentSerializer,
     AssessmentStudentSerializer,
     BranchSerializer,
+    CertificateSerializer,
     CohortFilterSerializer,
     CohortSerializer,
     CurriculumSerializer,
@@ -57,6 +65,7 @@ from .serializers import (
     CurriculumVersionSummarySerializer,
     EnrollmentCreateSerializer,
     EnrollmentSerializer,
+    GraduationRequirementsSerializer,
     QuestionBankQuestionSerializer,
     SessionSerializer,
 )
@@ -1022,3 +1031,280 @@ class StudentAssessmentAttemptDetailView(APIView):
             ))
         attempt.refresh_from_db()
         return Response(AssessmentAttemptSerializer(attempt, context={"request": request}).data)
+
+
+def build_graduation_report(cohort, requirements):
+    assessments = list(requirements.required_assessments.select_related("curriculum_topic").order_by("pk"))
+    sessions = list(Session.objects.filter(cohort=cohort, status=Session.Status.COMPLETED))
+    enrollments = list(Enrollment.objects.filter(cohort=cohort).select_related("student").order_by(
+        "student__last_name", "student__first_name", "pk"
+    ))
+    student_ids = [enrollment.student.pk for enrollment in enrollments]
+    attendance_by_student = {}
+    for record in Attendance.objects.filter(session__in=sessions, student_id__in=student_ids):
+        attendance_by_student.setdefault(getattr(record, "student_id"), []).append(record)
+    attempts_by_student_assessment = {}
+    for attempt in AssessmentAttempt.objects.filter(
+        assessment__in=assessments, student_id__in=student_ids,
+        status__in=(AssessmentAttempt.Status.SUBMITTED, AssessmentAttempt.Status.TIMED_OUT),
+        score__isnull=False, max_score__gt=0,
+    ).order_by("-attempt_number", "-pk"):
+        key = (getattr(attempt, "student_id"), getattr(attempt, "assessment_id"))
+        attempts_by_student_assessment.setdefault(key, attempt)
+    branch_timezone = ZoneInfo(cohort.branch.timezone)
+    rows = []
+    for enrollment in enrollments:
+        enrolled_on = timezone.localtime(enrollment.created_at, branch_timezone).date()
+        eligible_sessions = [session for session in sessions if session.date >= enrolled_on]
+        eligible_ids = {session.pk for session in eligible_sessions}
+        records = [record for record in attendance_by_student.get(enrollment.student.pk, []) if getattr(record, "session_id") in eligible_ids]
+        attended = sum(record.status in (Attendance.Status.PRESENT, Attendance.Status.LATE) for record in records)
+        excused = sum(record.status == Attendance.Status.EXCUSED for record in records)
+        denominator = len(eligible_sessions) - excused
+        attendance = Decimal(attended) * 100 / Decimal(denominator) if denominator else None
+        assessment_rows = []
+        scores = []
+        for assessment in assessments:
+            topic = assessment.curriculum_topic
+            applicable = getattr(assessment, "cohort_id") == cohort.pk or (
+                topic is not None and getattr(topic, "version_id") == getattr(cohort, "curriculum_version_id")
+            )
+            attempt = attempts_by_student_assessment.get((enrollment.student.pk, assessment.pk)) if applicable else None
+            percentage = (
+                attempt.score * 100 / attempt.max_score
+                if attempt and attempt.score is not None and attempt.max_score
+                else None
+            )
+            if percentage is not None:
+                scores.append(percentage)
+            assessment_rows.append({
+                "id": assessment.pk,
+                "title": assessment.title,
+                "attempt_number": attempt.attempt_number if attempt else None,
+                "score_percentage": round(float(percentage), 2) if percentage is not None else None,
+            })
+        average = sum(scores, Decimal("0")) / len(scores) if scores else None
+        reasons = []
+        incomplete = attendance is None or len(scores) != len(assessments) or not assessments
+        if attendance is None:
+            reasons.append("Attendance is not available.")
+        elif attendance < requirements.minimum_attendance:
+            reasons.append("Attendance is below the required minimum.")
+        if not assessments:
+            reasons.append("No required assessments have been selected.")
+        elif len(scores) != len(assessments):
+            reasons.append("Required assessments are incomplete.")
+        if average is not None and average < requirements.minimum_assessment_score:
+            reasons.append("Assessment average is below the required minimum.")
+        eligibility = "INCOMPLETE" if incomplete else "INELIGIBLE" if reasons else "ELIGIBLE"
+        student = enrollment.student
+        rows.append({
+            "student": {"id": student.pk, "username": student.username, "first_name": student.first_name, "last_name": student.last_name},
+            "attendance_percentage": round(float(attendance), 2) if attendance is not None else None,
+            "completed_sessions": len(eligible_sessions), "attended_sessions": attended, "excused_sessions": excused,
+            "assessment_average": round(float(average), 2) if average is not None else None,
+            "assessments": assessment_rows, "eligibility": eligibility, "reasons": reasons,
+        })
+    return {
+        "cohort": {"id": cohort.pk, "name": cohort.name, "branch": cohort.branch.name},
+        "requirements": {
+            "minimum_attendance": float(requirements.minimum_attendance),
+            "minimum_assessment_score": float(requirements.minimum_assessment_score),
+            "required_assessments": [{"id": assessment.pk, "title": assessment.title} for assessment in assessments],
+        },
+        "students": rows,
+    }
+
+
+class GraduationRequirementsView(CohortScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsSessionOperator)
+
+    def get(self, request, cohort_id):
+        cohort = self.get_cohort()
+        requirements = GraduationRequirements.objects.filter(cohort=cohort).first()
+        return Response(GraduationRequirementsSerializer(requirements).data if requirements else None)
+
+    @transaction.atomic
+    def put(self, request, cohort_id):
+        if not (request.user.is_super_admin() or request.user.is_branch_admin()):
+            raise PermissionDenied()
+        cohort = self.get_cohort()
+        cohort = Cohort.objects.select_for_update().get(pk=cohort.pk)
+        requirements = GraduationRequirements.objects.filter(cohort=cohort).first()
+        serializer = GraduationRequirementsSerializer(requirements, data=request.data, context={"cohort": cohort})
+        serializer.is_valid(raise_exception=True)
+        serializer.save(cohort=cohort)
+        return Response(serializer.data)
+
+
+class CohortResultsView(CohortScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsSessionOperator)
+
+    def get(self, request, cohort_id):
+        cohort = self.get_cohort()
+        requirements = GraduationRequirements.objects.filter(cohort=cohort).first()
+        if requirements is None:
+            return Response({"cohort": {"id": cohort.pk, "name": cohort.name}, "requirements": None, "students": []})
+        return Response(build_graduation_report(cohort, requirements))
+
+
+class StudentPerformanceView(CohortScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsSessionOperator)
+
+    def get(self, request, cohort_id, student_id):
+        cohort = self.get_cohort()
+        get_object_or_404(Enrollment, cohort=cohort, student_id=student_id)
+        requirements = get_object_or_404(GraduationRequirements, cohort=cohort)
+        report = build_graduation_report(cohort, requirements)
+        student = next(row for row in report["students"] if row["student"]["id"] == student_id)
+        return Response({"cohort": report["cohort"], "requirements": report["requirements"], "student": student})
+
+
+class CohortResultsFinalizeView(CohortScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsCohortManager)
+
+    @transaction.atomic
+    def post(self, request, cohort_id):
+        cohort = self.get_cohort()
+        cohort = Cohort.objects.select_for_update().get(pk=cohort.pk)
+        requirements = get_object_or_404(GraduationRequirements.objects.select_for_update(), cohort=cohort)
+        report = build_graduation_report(cohort, requirements)
+        report["finalized_by"] = {"id": request.user.pk, "name": request.user.get_full_name() or request.user.username}
+        snapshot = GraduationResultSnapshot.objects.create(cohort=cohort, finalized_by=request.user, report=report)
+        return Response({"id": snapshot.pk, "finalized_at": snapshot.finalized_at, "report": snapshot.report}, status=201)
+
+
+class CohortResultsHistoryView(CohortScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsSessionOperator)
+
+    def get(self, request, cohort_id):
+        snapshots = GraduationResultSnapshot.objects.filter(cohort=self.get_cohort())
+        return Response([{"id": item.pk, "finalized_at": item.finalized_at, "report": item.report} for item in snapshots])
+
+
+class CohortCertificateListIssueView(CohortScopeMixin, APIView):
+    permission_classes = (IsAuthenticated, IsCohortManager)
+
+    def get(self, request, cohort_id):
+        cohort = self.get_cohort()
+        certificates = Certificate.objects.filter(cohort=cohort).select_related("student", "cohort")
+        return Response(CertificateSerializer(certificates, many=True, context={"request": request}).data)
+
+    @transaction.atomic
+    def post(self, request, cohort_id):
+        cohort = self.get_cohort()
+        cohort = Cohort.objects.select_for_update().get(pk=cohort.pk)
+        requirements = GraduationRequirements.objects.filter(cohort=cohort).first()
+        if requirements is None:
+            raise ValidationError({"requirements": "Set graduation requirements before issuing certificates."})
+
+        report = build_graduation_report(cohort, requirements)
+        eligible_rows = {
+            row["student"]["id"]: row
+            for row in report["students"]
+            if row["eligibility"] == "ELIGIBLE"
+        }
+        requested_ids = request.data.get("student_ids")
+        if requested_ids is None:
+            student_ids = list(eligible_rows)
+        else:
+            if (
+                not isinstance(requested_ids, list)
+                or not requested_ids
+                or any(not isinstance(student_id, int) or isinstance(student_id, bool) for student_id in requested_ids)
+            ):
+                raise ValidationError({"student_ids": "Provide a non-empty list of student IDs."})
+            if len(requested_ids) != len(set(requested_ids)):
+                raise ValidationError({"student_ids": "A student can only be listed once."})
+            student_ids = requested_ids
+
+        ineligible_ids = [student_id for student_id in student_ids if student_id not in eligible_rows]
+        if ineligible_ids:
+            raise ValidationError({"student_ids": f"Students are not currently eligible: {ineligible_ids}."})
+        if not student_ids:
+            raise ValidationError({"students": "There are no eligible students to issue certificates to."})
+
+        created_count = 0
+        certificates = []
+        for student_id in student_ids:
+            row = eligible_rows[student_id]
+            student = Enrollment.objects.select_related("student").get(cohort=cohort, student_id=student_id).student
+            certificate, created = Certificate.objects.get_or_create(
+                cohort=cohort,
+                student=student,
+                defaults={
+                    "student_name": " ".join(filter(None, (student.first_name, student.last_name))) or student.username,
+                    "cohort_name": cohort.name,
+                    "branch_name": cohort.branch.name,
+                    "attendance_percentage": Decimal(str(row["attendance_percentage"])),
+                    "assessment_average": Decimal(str(row["assessment_average"])),
+                    "minimum_attendance": requirements.minimum_attendance,
+                    "minimum_assessment_score": requirements.minimum_assessment_score,
+                    "issued_by": request.user,
+                },
+            )
+            created_count += int(created)
+            certificates.append(certificate)
+
+        return Response({
+            "issued": created_count,
+            "already_issued": len(certificates) - created_count,
+            "certificates": CertificateSerializer(certificates, many=True, context={"request": request}).data,
+        }, status=201 if created_count else 200)
+
+
+class StudentCertificateListView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        if request.user.application_role != User.ApplicationRole.STUDENT:
+            raise PermissionDenied("Only students can access their certificates here.")
+        certificates = Certificate.objects.filter(student=request.user).select_related("student", "cohort")
+        return Response(CertificateSerializer(certificates, many=True, context={"request": request}).data)
+
+
+class CertificateDownloadView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, certificate_id):
+        certificate = get_object_or_404(
+            Certificate.objects.select_related("student", "cohort__branch"),
+            pk=certificate_id,
+        )
+        user = request.user
+        is_owner = user.application_role == User.ApplicationRole.STUDENT and certificate.student.pk == user.pk
+        is_admin = user.is_super_admin() or (
+            user.is_branch_admin() and certificate.cohort.branch.pk == user.branch_id
+        )
+        if not (is_owner or is_admin):
+            raise PermissionDenied("You cannot download this certificate.")
+
+        verification_url = request.build_absolute_uri(reverse(
+            "certificate-verify",
+            kwargs={"verification_code": certificate.verification_code},
+        ))
+        pdf = render_certificate_pdf(certificate, verification_url)
+        return FileResponse(
+            BytesIO(pdf),
+            as_attachment=True,
+            filename=f"{certificate.certificate_number}.pdf",
+            content_type="application/pdf",
+        )
+
+
+class CertificateVerificationView(APIView):
+    permission_classes = (AllowAny,)
+
+    def get(self, request, verification_code):
+        certificate = Certificate.objects.filter(verification_code=verification_code).first()
+        if certificate is None:
+            raise NotFound("No certificate matches this verification reference.")
+        return Response({
+            "valid": True,
+            "certificate_number": certificate.certificate_number,
+            "recipient_name": certificate.student_name,
+            "cohort_name": certificate.cohort_name,
+            "branch_name": certificate.branch_name,
+            "issued_at": certificate.issued_at.isoformat(),
+            "verification_code": str(certificate.verification_code),
+        })

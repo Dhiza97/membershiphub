@@ -2,6 +2,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db import transaction
+from django.urls import reverse
 from rest_framework import serializers
 
 from apps.accounts.models import User
@@ -15,6 +16,7 @@ from .models import (
     CurriculumTopic,
     CurriculumVersion,
     Enrollment,
+    GraduationRequirements,
     LearningMaterial,
     Session,
     Attendance,
@@ -25,6 +27,7 @@ from .models import (
     Question,
     QuestionBank,
     QuestionOption,
+    Certificate,
 )
 
 
@@ -970,3 +973,65 @@ class AssessmentAttemptSerializer(serializers.ModelSerializer):
             data["score"] = None
             data["max_score"] = None
         return data
+
+
+class GraduationRequirementsSerializer(serializers.ModelSerializer):
+    required_assessments = serializers.PrimaryKeyRelatedField(
+        queryset=Assessment.objects.filter(status=Assessment.Status.PUBLISHED), many=True, allow_empty=False
+    )
+
+    class Meta:
+        model = GraduationRequirements
+        fields = ("minimum_attendance", "minimum_assessment_score", "required_assessments", "updated_at")
+        read_only_fields = ("updated_at",)
+
+    def validate_required_assessments(self, assessments):
+        cohort = self.context["cohort"]
+        if len({assessment.pk for assessment in assessments}) != len(assessments):
+            raise serializers.ValidationError("An assessment can only be selected once.")
+        for assessment in assessments:
+            topic = assessment.curriculum_topic
+            if assessment.cohort != cohort and not (
+                topic is not None and cohort.curriculum_version_id == topic.version_id
+            ):
+                raise serializers.ValidationError("Select published assessments assigned to this cohort or its curriculum version.")
+            if assessment.branch_id != cohort.branch_id:
+                raise serializers.ValidationError("Assessments must belong to this cohort's branch.")
+        return assessments
+
+
+class CertificateSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+    verification_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Certificate
+        fields = (
+            "id",
+            "certificate_number",
+            "student",
+            "student_name",
+            "cohort",
+            "cohort_name",
+            "branch_name",
+            "attendance_percentage",
+            "assessment_average",
+            "minimum_attendance",
+            "minimum_assessment_score",
+            "verification_code",
+            "issued_at",
+            "download_url",
+            "verification_url",
+        )
+        read_only_fields = fields
+
+    def _absolute_url(self, view_name, kwargs):
+        path = reverse(view_name, kwargs=kwargs)
+        request = self.context.get("request")
+        return request.build_absolute_uri(path) if request else path
+
+    def get_download_url(self, obj):
+        return self._absolute_url("certificate-download", {"certificate_id": obj.pk})
+
+    def get_verification_url(self, obj):
+        return self._absolute_url("certificate-verify", {"verification_code": obj.verification_code})

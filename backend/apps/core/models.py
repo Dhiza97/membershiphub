@@ -1,9 +1,11 @@
 from typing import cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import Decimal
+from uuid import uuid4
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
+from django.db import models, transaction
 from django.db.models.functions import Lower
 from django.utils import timezone
 
@@ -894,3 +896,81 @@ class AssessmentAnswer(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class GraduationRequirements(models.Model):
+    cohort = models.OneToOneField(Cohort, on_delete=models.PROTECT, related_name="graduation_requirements")
+    minimum_attendance = models.DecimalField(
+        max_digits=5, decimal_places=2, validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+    minimum_assessment_score = models.DecimalField(
+        max_digits=5, decimal_places=2, validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+    required_assessments = models.ManyToManyField(Assessment, related_name="graduation_requirements", blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class GraduationResultSnapshot(models.Model):
+    cohort = models.ForeignKey(Cohort, on_delete=models.PROTECT, related_name="result_snapshots")
+    finalized_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, related_name="finalized_result_snapshots"
+    )
+    finalized_at = models.DateTimeField(auto_now_add=True)
+    report = models.JSONField()
+
+    class Meta:
+        ordering = ("-finalized_at", "-pk")
+
+    def save(self, *args, **kwargs):
+        if self.pk and GraduationResultSnapshot.objects.filter(pk=self.pk).exists():
+            raise ValidationError("Finalized result snapshots cannot be changed.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Finalized result snapshots cannot be deleted.")
+
+
+class Certificate(models.Model):
+    cohort = models.ForeignKey(Cohort, on_delete=models.PROTECT, related_name="certificates")
+    student = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="certificates")
+    certificate_number = models.CharField(max_length=32, unique=True, null=True, blank=True, editable=False)
+    verification_code = models.UUIDField(default=uuid4, unique=True, editable=False)
+    student_name = models.CharField(max_length=240)
+    cohort_name = models.CharField(max_length=150)
+    branch_name = models.CharField(max_length=150)
+    attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2)
+    assessment_average = models.DecimalField(max_digits=5, decimal_places=2)
+    minimum_attendance = models.DecimalField(max_digits=5, decimal_places=2)
+    minimum_assessment_score = models.DecimalField(max_digits=5, decimal_places=2)
+    issued_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="issued_certificates",
+    )
+    issued_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ("-issued_at", "-pk")
+        constraints = [
+            models.UniqueConstraint(fields=("cohort", "student"), name="unique_certificate_per_student_cohort"),
+        ]
+
+    def __str__(self):
+        return self.certificate_number or f"Certificate {self.pk}"
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("Issued certificates cannot be changed.")
+        self.full_clean()
+        super().save(*args, **kwargs)
+        self.certificate_number = f"MH-{timezone.localtime(self.issued_at).year}-{self.pk:06d}"
+        type(self).objects.filter(pk=self.pk).update(certificate_number=self.certificate_number)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Issued certificates cannot be deleted.")

@@ -4,6 +4,7 @@ import {
 	BookOpen,
 	ChevronRight,
 	ClipboardList,
+	ChartNoAxesCombined,
 	CircleHelp,
 	GraduationCap,
 	Layers3,
@@ -17,12 +18,14 @@ import { CohortBoard, CohortDetail, CohortWizard } from './CohortScreens.jsx'
 import { CurriculumManager } from './CurriculumScreens.jsx'
 import { SessionManager } from './SessionScreens.jsx'
 import { AssessmentManager, StudentAssessments } from './AssessmentScreens.jsx'
+import { ResultsManager } from './ResultsScreens.jsx'
 import { mockApi } from './api/mockApi.js'
 
 const NAV_ITEMS = {
 	SUPER_ADMIN: [
 		{ id: 'cohorts', label: 'Cohorts', icon: GraduationCap },
 		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
+		{ id: 'results', label: 'Results', icon: ChartNoAxesCombined },
 		{ id: 'curricula', label: 'Curricula', icon: BookOpen },
 		{ id: 'users', label: 'People', icon: UsersRound },
 		{ id: 'branches', label: 'Branches', icon: Building2 },
@@ -30,6 +33,7 @@ const NAV_ITEMS = {
 	BRANCH_ADMIN: [
 		{ id: 'cohorts', label: 'Cohorts', icon: GraduationCap },
 		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
+		{ id: 'results', label: 'Results', icon: ChartNoAxesCombined },
 		{ id: 'curricula', label: 'Curricula', icon: BookOpen },
 		{ id: 'users', label: 'People', icon: UsersRound },
 		{ id: 'branch-info', label: 'My branch', icon: Building2 },
@@ -37,6 +41,7 @@ const NAV_ITEMS = {
 	INSTRUCTOR: [
 		{ id: 'cohorts', label: 'My cohorts', icon: GraduationCap },
 		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
+		{ id: 'results', label: 'Results', icon: ChartNoAxesCombined },
 	],
 	STUDENT: [{ id: 'assessments', label: 'My assessments', icon: ClipboardList }],
 }
@@ -48,6 +53,7 @@ const PAGE_TITLES = {
 	'cohort-wizard': 'Cohort setup',
 	sessions: 'Sessions and attendance',
 	assessments: 'Assessments',
+	results: 'Results and eligibility',
 	users: 'People management',
 	branches: 'Branch management',
 	'branch-info': 'Branch information',
@@ -238,6 +244,14 @@ export default function App() {
 		return mutate(() => mockApi[method](...args, currentUser), '')
 	}
 
+	async function saveGraduationRequirements(cohortId, input) {
+		return mutate(() => mockApi.saveGraduationRequirements(cohortId, input, currentUser), 'Graduation requirements saved.')
+	}
+
+	async function finalizeGraduationResults(cohortId) {
+		return mutate(() => mockApi.finalizeGraduationResults(cohortId, currentUser), 'Results finalized.')
+	}
+
 	function navigate(nextView) {
 		setView(nextView)
 		setSelectedCohortId(null)
@@ -292,6 +306,7 @@ export default function App() {
 						{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => mockApi.addStudent(cohortId, studentId, currentUser), 'Student enrolled in this demo.')} onRemoveStudent={(cohortId, studentId) => mutate(() => mockApi.removeStudent(cohortId, studentId, currentUser), 'Student removed from this demo.')} />}
 						{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
 						{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
+						{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} />}
 						{view === 'users' && <UserManager users={snapshot.users} branches={visibleBranches} currentUser={currentUser} busy={busy} onSave={saveUser} />}
 						{view === 'curricula' && <CurriculumManager curricula={visibleCurricula} versions={visibleCurriculumVersions} branches={visibleBranches} user={currentUser} busy={busy} onCreate={createCurriculum} onUpdate={saveCurriculum} onCreateVersion={createCurriculumVersion} onSaveVersion={saveCurriculumVersion} onPublish={publishCurriculumVersion} />}
 						{view === 'branches' && isSuperAdmin && <BranchManager branches={snapshot.branches} users={snapshot.users} cohorts={snapshot.cohorts} busy={busy} onSave={saveBranch} />}

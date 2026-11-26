@@ -1,4 +1,5 @@
 from datetime import date, time, timedelta
+from decimal import Decimal
 from typing import cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -10,6 +11,7 @@ from rest_framework.test import APITestCase
 from apps.accounts.models import User
 
 from .models import (
+    Certificate,
     Assessment,
     AssessmentAttempt,
     AssessmentAnswer,
@@ -25,6 +27,7 @@ from .models import (
     Enrollment,
     Session,
     Attendance,
+    GraduationRequirements,
 )
 
 
@@ -189,6 +192,286 @@ class AssessmentAPITests(APITestCase):
         response = self.client.get(f"/api/student/attempts/{attempt['id']}/")
         self.assertEqual(response.json()["score"], "0.00")
         self.assertEqual(Assessment.objects.get(pk=assessment_id).status, Assessment.Status.PUBLISHED)
+
+
+class CertificateAPITests(APITestCase):
+    def setUp(self):
+        self.branch = Branch.objects.create(name="Certificate branch")
+        self.admin = User.objects.create_user(
+            username="certificate-admin",
+            application_role=User.ApplicationRole.BRANCH_ADMIN,
+            branch=self.branch,
+        )
+        self.student = User.objects.create_user(
+            username="certificate-student",
+            first_name="Amina",
+            last_name="Mensah",
+            application_role=User.ApplicationRole.STUDENT,
+            branch=self.branch,
+        )
+        instructor = User.objects.create_user(
+            username="certificate-instructor",
+            application_role=User.ApplicationRole.INSTRUCTOR,
+            branch=self.branch,
+        )
+        self.cohort = Cohort.objects.create(
+            branch=self.branch,
+            name="Certificate cohort",
+            instructor=instructor,
+        )
+        Enrollment.objects.create(cohort=self.cohort, student=self.student)
+        session = Session.objects.create(
+            cohort=self.cohort,
+            title="Completed class",
+            date=timezone.localdate(),
+            start_time=time(10),
+            end_time=time(11),
+            status=Session.Status.COMPLETED,
+        )
+        Attendance.objects.create(
+            session=session,
+            student=self.student,
+            status=Attendance.Status.PRESENT,
+        )
+
+        bank = QuestionBank.objects.create(branch=self.branch)
+        question = Question.objects.create(bank=bank, prompt="Certificate result question")
+        self.assessment = Assessment.objects.create(
+            branch=self.branch,
+            cohort=self.cohort,
+            title="Required quiz",
+            duration_seconds=300,
+        )
+        AssessmentQuestion.objects.create(assessment=self.assessment, question=question)
+        self.assessment.status = Assessment.Status.PUBLISHED
+        self.assessment.save()
+        AssessmentAttempt.objects.create(
+            assessment=self.assessment,
+            student=self.student,
+            attempt_number=1,
+            status=AssessmentAttempt.Status.SUBMITTED,
+            score=90,
+            max_score=100,
+        )
+        requirements = GraduationRequirements.objects.create(
+            cohort=self.cohort,
+            minimum_attendance=80,
+            minimum_assessment_score=70,
+        )
+        requirements.required_assessments.add(self.assessment)
+        self.client.force_login(self.admin)
+
+    def certificate_path(self):
+        return f"/api/cohorts/{self.cohort.pk}/certificates/"
+
+    def test_only_eligible_students_receive_immutable_certificates_once(self):
+        response = self.client.post(self.certificate_path(), {"student_ids": [self.student.pk]}, format="json")
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()["issued"], 1)
+        certificate = Certificate.objects.get(cohort=self.cohort, student=self.student)
+        self.assertEqual(certificate.student_name, "Amina Mensah")
+        certificate_number = cast(str, certificate.certificate_number)
+        self.assertTrue(certificate_number.startswith("MH-2026-"))
+        self.assertEqual(response.json()["certificates"][0]["certificate_number"], certificate.certificate_number)
+
+        repeated = self.client.post(self.certificate_path(), {"student_ids": [self.student.pk]}, format="json")
+        self.assertEqual(repeated.status_code, 200, repeated.json())
+        self.assertEqual(repeated.json()["issued"], 0)
+        self.assertEqual(repeated.json()["already_issued"], 1)
+        self.assertEqual(Certificate.objects.filter(cohort=self.cohort, student=self.student).count(), 1)
+
+        with self.assertRaises(DjangoValidationError):
+            certificate.delete()
+
+    def test_pdf_download_is_owner_scoped_and_verification_is_public(self):
+        issued = self.client.post(self.certificate_path(), {"student_ids": [self.student.pk]}, format="json")
+        certificate = Certificate.objects.get(pk=issued.json()["certificates"][0]["id"])
+
+        self.client.force_login(self.student)
+        download = self.client.get(f"/api/certificates/{certificate.pk}/download/")
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download["Content-Type"], "application/pdf")
+        self.assertTrue(b"".join(getattr(download, "streaming_content")).startswith(b"%PDF-"))
+
+        outsider = User.objects.create_user(
+            username="certificate-outsider",
+            application_role=User.ApplicationRole.STUDENT,
+            branch=self.branch,
+        )
+        self.client.force_login(outsider)
+        self.assertEqual(self.client.get(f"/api/certificates/{certificate.pk}/download/").status_code, 403)
+
+        self.client.logout()
+        verification = self.client.get(f"/api/certificates/verify/{certificate.verification_code}/")
+        self.assertEqual(verification.status_code, 200, verification.json())
+        self.assertTrue(verification.json()["valid"])
+        self.assertEqual(verification.json()["recipient_name"], "Amina Mensah")
+        self.assertNotIn("assessment_average", verification.json())
+        self.assertEqual(self.client.get(f"/api/certificates/verify/{'0' * 8}-0000-0000-0000-000000000000/").status_code, 404)
+
+    def test_ineligible_student_and_non_manager_cannot_issue(self):
+        other_student = User.objects.create_user(
+            username="ineligible-student",
+            application_role=User.ApplicationRole.STUDENT,
+            branch=self.branch,
+        )
+        Enrollment.objects.create(cohort=self.cohort, student=other_student)
+        response = self.client.post(self.certificate_path(), {"student_ids": [other_student.pk]}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Certificate.objects.filter(student=other_student).exists())
+
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.post(self.certificate_path()).status_code, 403)
+
+
+class GraduationResultsAPITests(APITestCase):
+    def setUp(self):
+        self.branch = Branch.objects.create(name="Results branch")
+        self.admin = User.objects.create_user(username="results-admin", application_role=User.ApplicationRole.BRANCH_ADMIN, branch=self.branch)
+        self.instructor = User.objects.create_user(username="results-instructor", application_role=User.ApplicationRole.INSTRUCTOR, branch=self.branch)
+        self.student = User.objects.create_user(username="results-student", application_role=User.ApplicationRole.STUDENT, branch=self.branch)
+        self.cohort = Cohort.objects.create(branch=self.branch, name="Results cohort", instructor=self.instructor)
+        Enrollment.objects.create(cohort=self.cohort, student=self.student)
+        bank = QuestionBank.objects.create(branch=self.branch)
+        question = Question.objects.create(bank=bank, prompt="Results question")
+        self.assessment = Assessment.objects.create(branch=self.branch, cohort=self.cohort, title="Test assessment", duration_seconds=300)
+        AssessmentQuestion.objects.create(assessment=self.assessment, question=question)
+        self.assessment.status = Assessment.Status.PUBLISHED
+        self.assessment.save()
+        self.session = Session.objects.create(
+            cohort=self.cohort, title="Class", date=timezone.localdate(),
+            start_time=time(10), end_time=time(11), status=Session.Status.COMPLETED,
+        )
+        Attendance.objects.create(session=self.session, student=self.student, status=Attendance.Status.PRESENT)
+        self.client.force_login(self.admin)
+
+    def configure(self):
+        return self.client.put(f"/api/cohorts/{self.cohort.pk}/graduation-requirements/", {
+            "minimum_attendance": "80.00", "minimum_assessment_score": "70.00",
+            "required_assessments": [self.assessment.pk],
+        }, format="json")
+
+    def test_latest_score_and_finalized_history(self):
+        self.assertEqual(self.configure().status_code, 200)
+        AssessmentAttempt.objects.create(assessment=self.assessment, student=self.student, attempt_number=1,
+                                         status=AssessmentAttempt.Status.SUBMITTED, score=90, max_score=100)
+        latest = AssessmentAttempt.objects.create(assessment=self.assessment, student=self.student, attempt_number=2,
+                                                  status=AssessmentAttempt.Status.SUBMITTED, score=60, max_score=100)
+        report_path = f"/api/cohorts/{self.cohort.pk}/results/"
+        response = self.client.get(report_path)
+        self.assertEqual(response.status_code, 200, response.json())
+        row = response.json()["students"][0]
+        self.assertEqual(row["assessment_average"], 60.0)
+        self.assertEqual(row["attendance_percentage"], 100.0)
+        self.assertEqual(row["eligibility"], "INELIGIBLE")
+        frozen = self.client.post(f"{report_path}finalize/")
+        self.assertEqual(frozen.status_code, 201, frozen.json())
+        latest.score = Decimal("95")
+        latest.save()
+        self.assertEqual(self.client.get(report_path).json()["students"][0]["eligibility"], "ELIGIBLE")
+        history = self.client.get(f"{report_path}history/")
+        self.assertEqual(history.json()[0]["report"]["students"][0]["assessment_average"], 60.0)
+        self.assertEqual(self.client.post(f"{report_path}finalize/").status_code, 201)
+        self.assertEqual(len(self.client.get(f"{report_path}history/").json()), 2)
+
+    def test_missing_data_and_authorization(self):
+        self.assertEqual(self.configure().status_code, 200)
+        path = f"/api/cohorts/{self.cohort.pk}/results/"
+        self.assertEqual(self.client.get(path).json()["students"][0]["eligibility"], "INCOMPLETE")
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.get(path).status_code, 200)
+        self.assertEqual(self.configure().status_code, 403)
+        self.assertEqual(self.client.post(f"{path}finalize/").status_code, 403)
+        other_branch = Branch.objects.create(name="Other results branch")
+        other_admin = User.objects.create_user(username="other-results-admin", application_role=User.ApplicationRole.BRANCH_ADMIN, branch=other_branch)
+        self.client.force_login(other_admin)
+        self.assertEqual(self.client.get(path).status_code, 404)
+        self.client.force_login(self.student)
+        self.assertEqual(self.client.get(path).status_code, 403)
+
+    def test_requirements_reject_other_cohort_assessments_and_invalid_thresholds(self):
+        other = Cohort.objects.create(branch=self.branch, name="Other cohort")
+        other_assessment = Assessment.objects.create(branch=self.branch, cohort=other, title="Other", duration_seconds=60)
+        response = self.client.put(f"/api/cohorts/{self.cohort.pk}/graduation-requirements/", {
+            "minimum_attendance": 101, "minimum_assessment_score": 70, "required_assessments": [other_assessment.pk],
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        response = self.client.put(f"/api/cohorts/{self.cohort.pk}/graduation-requirements/", {
+            "minimum_attendance": 80, "minimum_assessment_score": 70, "required_assessments": [other_assessment.pk],
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_student_summary_excludes_excused_and_requires_attendance(self):
+        self.assertEqual(self.configure().status_code, 200)
+        AssessmentAttempt.objects.create(assessment=self.assessment, student=self.student, attempt_number=1,
+                                         status=AssessmentAttempt.Status.SUBMITTED, score=75, max_score=100)
+        excused = Session.objects.create(
+            cohort=self.cohort, title="Excused", date=timezone.localdate(),
+            start_time=time(12), end_time=time(13), status=Session.Status.COMPLETED,
+        )
+        Attendance.objects.create(session=excused, student=self.student, status=Attendance.Status.EXCUSED)
+        path = f"/api/cohorts/{self.cohort.pk}/results/students/{self.student.pk}/"
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["student"]["attendance_percentage"], 100.0)
+        self.assertEqual(response.json()["student"]["eligibility"], "ELIGIBLE")
+        Attendance.objects.filter(session=self.session).update(status=Attendance.Status.EXCUSED)
+        response = self.client.get(path)
+        self.assertIsNone(response.json()["student"]["attendance_percentage"])
+        self.assertEqual(response.json()["student"]["eligibility"], "INCOMPLETE")
+
+    def test_equal_assessment_weight_and_published_assessment_scope(self):
+        other = Cohort.objects.create(branch=self.branch, name="Another cohort")
+        question = AssessmentQuestion.objects.get(assessment=self.assessment).question
+        other_assessment = Assessment.objects.create(branch=self.branch, cohort=other, title="Other published", duration_seconds=60)
+        AssessmentQuestion.objects.create(assessment=other_assessment, question=question)
+        other_assessment.status = Assessment.Status.PUBLISHED
+        other_assessment.save()
+        path = f"/api/cohorts/{self.cohort.pk}/graduation-requirements/"
+        response = self.client.put(path, {
+            "minimum_attendance": 100, "minimum_assessment_score": 75, "required_assessments": [other_assessment.pk],
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        second = Assessment.objects.create(branch=self.branch, cohort=self.cohort, title="Second", duration_seconds=60)
+        AssessmentQuestion.objects.create(assessment=second, question=question)
+        second.status = Assessment.Status.PUBLISHED
+        second.save()
+        response = self.client.put(path, {
+            "minimum_attendance": 100, "minimum_assessment_score": 75, "required_assessments": [self.assessment.pk, second.pk],
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.json())
+        AssessmentAttempt.objects.create(assessment=self.assessment, student=self.student, attempt_number=1,
+                                         status=AssessmentAttempt.Status.SUBMITTED, score=1, max_score=2)
+        AssessmentAttempt.objects.create(assessment=second, student=self.student, attempt_number=1,
+                                         status=AssessmentAttempt.Status.TIMED_OUT, score=10, max_score=10)
+        row = self.client.get(f"/api/cohorts/{self.cohort.pk}/results/").json()["students"][0]
+        self.assertEqual(row["assessment_average"], 75.0)
+        self.assertEqual(row["eligibility"], "ELIGIBLE")
+
+    def test_curriculum_change_invalidates_topic_requirement(self):
+        curriculum = Curriculum.objects.create(branch=self.branch, name="Results curriculum")
+        version = CurriculumVersion.objects.create(curriculum=curriculum, version_number=1)
+        topic = CurriculumTopic.objects.create(version=version, title="Topic")
+        version.status = CurriculumVersion.Status.PUBLISHED
+        version.save()
+        self.cohort.curriculum_version = version
+        self.cohort.save()
+        question = AssessmentQuestion.objects.get(assessment=self.assessment).question
+        topic_assessment = Assessment.objects.create(branch=self.branch, curriculum_topic=topic, title="Topic quiz", duration_seconds=60)
+        AssessmentQuestion.objects.create(assessment=topic_assessment, question=question)
+        topic_assessment.status = Assessment.Status.PUBLISHED
+        topic_assessment.save()
+        response = self.client.put(f"/api/cohorts/{self.cohort.pk}/graduation-requirements/", {
+            "minimum_attendance": 80, "minimum_assessment_score": 70, "required_assessments": [topic_assessment.pk],
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.json())
+        AssessmentAttempt.objects.create(assessment=topic_assessment, student=self.student, attempt_number=1,
+                                         status=AssessmentAttempt.Status.SUBMITTED, score=100, max_score=100)
+        self.cohort.curriculum_version = None
+        self.cohort.save()
+        row = self.client.get(f"/api/cohorts/{self.cohort.pk}/results/").json()["students"][0]
+        self.assertEqual(row["eligibility"], "INCOMPLETE")
+        self.assertIsNone(row["assessments"][0]["score_percentage"])
 
 
 class BranchModelTests(TestCase):
