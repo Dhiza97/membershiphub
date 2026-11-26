@@ -1,18 +1,19 @@
 import { useState } from 'react'
-import { Archive, ClipboardCheck, Settings2 } from 'lucide-react'
+import { Archive, BadgeCheck, ClipboardCheck, Download, ExternalLink, Settings2 } from 'lucide-react'
 import { calculateGraduationReport } from './api/mockApi.js'
+import { downloadCertificatePdf } from './certificatePdf.js'
 
 const primary = 'inline-flex min-h-10 items-center justify-center gap-2 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50'
 const secondary = 'inline-flex min-h-10 items-center justify-center gap-2 border border-hub-line bg-white px-4 text-sm font-semibold hover:border-hub-purple disabled:opacity-50'
 const field = 'mt-1.5 min-h-10 w-full border border-hub-line bg-white px-3 text-sm text-hub-ink'
 const labels = { ELIGIBLE: 'Eligible', INELIGIBLE: 'Not eligible', INCOMPLETE: 'Incomplete' }
-const tones = { ELIGIBLE: 'bg-emerald-100 text-emerald-900', INELIGIBLE: 'bg-red-100 text-red-900', INCOMPLETE: 'bg-stone-100 text-stone-700' }
+const tones = { ELIGIBLE: 'bg-emerald-100 text-emerald-900', INELIGIBLE: 'bg-red-100 text-red-900', INCOMPLETE: 'bg-stone-100 text-hub-ink' }
 
 function percent(value) {
   return value == null ? 'Not available' : `${Number(value.toFixed(2))}%`
 }
 
-export function ResultsManager({ snapshot, user, cohorts, busy, onSaveRequirements, onFinalize }) {
+export function ResultsManager({ snapshot, user, cohorts, busy, onSaveRequirements, onFinalize, onIssueCertificates }) {
   const [cohortId, setCohortId] = useState(cohorts[0]?.id ?? '')
   const cohort = cohorts.find((item) => item.id === Number(cohortId))
   return <section className="space-y-5">
@@ -20,11 +21,11 @@ export function ResultsManager({ snapshot, user, cohorts, busy, onSaveRequiremen
       <div><h1 className="text-2xl font-semibold">Results and eligibility</h1><p className="mt-1 text-sm text-hub-muted">Cohort performance and graduation review</p></div>
       <label className="w-full text-xs font-semibold text-hub-muted sm:w-72">Cohort<select className={field} value={cohortId} onChange={(event) => setCohortId(event.target.value)}><option value="">Choose a cohort</option>{cohorts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     </div>
-    {cohort ? <CohortResults key={cohort.id} snapshot={snapshot} cohort={cohort} user={user} busy={busy} onSaveRequirements={onSaveRequirements} onFinalize={onFinalize} /> : <p className="border-y border-hub-line bg-white p-5 text-sm text-hub-muted">No cohorts are available.</p>}
+    {cohort ? <CohortResults key={cohort.id} snapshot={snapshot} cohort={cohort} user={user} busy={busy} onSaveRequirements={onSaveRequirements} onFinalize={onFinalize} onIssueCertificates={onIssueCertificates} /> : <p className="border-y border-hub-line bg-white p-5 text-sm text-hub-muted">No cohorts are available.</p>}
   </section>
 }
 
-function CohortResults({ snapshot, cohort, user, busy, onSaveRequirements, onFinalize }) {
+function CohortResults({ snapshot, cohort, user, busy, onSaveRequirements, onFinalize, onIssueCertificates }) {
   const [tab, setTab] = useState('live')
   const [editing, setEditing] = useState(false)
   const [selectedSnapshot, setSelectedSnapshot] = useState(null)
@@ -37,6 +38,9 @@ function CohortResults({ snapshot, cohort, user, busy, onSaveRequirements, onFin
   const history = snapshot.graduationSnapshots.filter((item) => item.cohort === cohort.id).toSorted((left, right) => right.id - left.id)
   const archived = history.find((item) => item.id === selectedSnapshot)
   const report = tab === 'history' ? archived?.report : liveReport
+  const certificates = snapshot.certificates.filter((certificate) => certificate.cohort === cohort.id)
+  const eligibleStudents = (liveReport?.students ?? []).filter((row) => row.eligibility === 'ELIGIBLE')
+  const pendingStudents = eligibleStudents.filter((row) => !certificates.some((certificate) => certificate.student === row.student.id))
   const searchTerm = studentQuery.trim().toLowerCase()
   const visibleReport = report ? {
     ...report,
@@ -61,8 +65,13 @@ function CohortResults({ snapshot, cohort, user, busy, onSaveRequirements, onFin
     try { await onFinalize(cohort.id) } catch (failure) { setError(failure.message) }
   }
 
+  async function issueCertificates() {
+    setError('')
+    try { await onIssueCertificates(cohort.id, pendingStudents.map((row) => row.student.id)) } catch (failure) { setError(failure.message) }
+  }
+
   return <div className="space-y-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex gap-5 border-b border-hub-line"><button type="button" className={`border-b-2 pb-3 text-sm font-semibold ${tab === 'live' ? 'border-hub-purple text-hub-purple' : 'border-transparent text-hub-muted'}`} onClick={() => { setTab('live'); setEditing(false) }}>Current results</button><button type="button" className={`border-b-2 pb-3 text-sm font-semibold ${tab === 'history' ? 'border-hub-purple text-hub-purple' : 'border-transparent text-hub-muted'}`} onClick={() => { setTab('history'); setEditing(false); setSelectedSnapshot(history[0]?.id ?? null) }}>Finalized history ({history.length})</button></div>{canManage && tab === 'live' && <div className="flex flex-wrap gap-2"><button type="button" className={secondary} onClick={() => { setError(''); setEditing(!editing) }}><Settings2 size={16} aria-hidden="true" />{requirements ? 'Edit requirements' : 'Set requirements'}</button>{requirements && <button type="button" className={primary} disabled={busy || editing} onClick={finalize}><Archive size={16} aria-hidden="true" />Finalize results</button>}</div>}</div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex gap-5 border-b border-hub-line"><button type="button" className={`border-b-2 pb-3 text-sm font-semibold ${tab === 'live' ? 'border-hub-purple text-hub-purple' : 'border-transparent text-hub-muted'}`} onClick={() => { setTab('live'); setEditing(false) }}>Current results</button><button type="button" className={`border-b-2 pb-3 text-sm font-semibold ${tab === 'history' ? 'border-hub-purple text-hub-purple' : 'border-transparent text-hub-muted'}`} onClick={() => { setTab('history'); setEditing(false); setSelectedSnapshot(history[0]?.id ?? null) }}>Finalized history ({history.length})</button></div>{canManage && tab === 'live' && <div className="flex flex-wrap gap-2"><button type="button" className={secondary} onClick={() => { setError(''); setEditing(!editing) }}><Settings2 size={16} aria-hidden="true" />{requirements ? 'Edit requirements' : 'Set requirements'}</button>{requirements && <button type="button" className={secondary} disabled={busy || editing || pendingStudents.length === 0} onClick={issueCertificates}><BadgeCheck size={16} aria-hidden="true" />Issue certificates{pendingStudents.length ? ` (${pendingStudents.length})` : ''}</button>}{requirements && <button type="button" className={primary} disabled={busy || editing} onClick={finalize}><Archive size={16} aria-hidden="true" />Finalize results</button>}</div>}</div>
     {error && <p role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">{error}</p>}
     {editing && <RequirementsEditor requirements={requirements} assessments={availableAssessments} busy={busy} onSave={save} onCancel={() => { setEditing(false); setError('') }} />}
     {tab === 'history' && <div className="flex flex-wrap items-end gap-3"><label className="w-full max-w-sm text-xs font-semibold text-hub-muted">Finalized report<select className={field} value={selectedSnapshot ?? ''} onChange={(event) => setSelectedSnapshot(Number(event.target.value) || null)}><option value="">Choose a report</option>{history.map((item) => <option key={item.id} value={item.id}>{new Date(item.finalized_at).toLocaleString()} · {item.report.finalized_by?.name}</option>)}</select></label></div>}
@@ -74,6 +83,16 @@ function CohortResults({ snapshot, cohort, user, busy, onSaveRequirements, onFin
     {!editing && !report && <div className="border-y border-hub-line bg-white px-5 py-8"><ClipboardCheck size={22} className="text-hub-purple" aria-hidden="true" /><h2 className="mt-3 font-semibold">{tab === 'history' ? 'No finalized reports' : 'Requirements not set'}</h2><p className="mt-1 text-sm text-hub-muted">{tab === 'history' ? 'Finalized results will appear here.' : 'An administrator must set requirements for this cohort.'}</p></div>}
     {!editing && report && visibleReport.students.length === 0 && report.students.length > 0 && <p className="border-y border-hub-line bg-white p-5 text-sm text-hub-muted">No students match these filters. Change the search or eligibility selection.</p>}
     {!editing && report && (visibleReport.students.length > 0 || report.students.length === 0) && <Report report={visibleReport} />}
+    {!editing && certificates.length > 0 && <section className="space-y-3">
+      <h2 className="text-base font-semibold">Issued certificates <span className="font-normal text-hub-muted">({certificates.length})</span></h2>
+      <div className="divide-y divide-hub-line border-y border-hub-line bg-white">
+        {certificates.map((certificate) => <article key={certificate.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0"><p className="text-sm font-semibold">{certificate.student_name}</p><p className="mt-1 text-xs text-hub-muted">{certificate.certificate_number} · {new Date(certificate.issued_at).toLocaleDateString()}</p></div>
+          <div className="flex flex-wrap gap-2"><a className={secondary} href={`/?verify=${encodeURIComponent(certificate.verification_code)}`} target="_blank" rel="noreferrer"><ExternalLink size={15} aria-hidden="true" />Verify</a><button type="button" className={secondary} onClick={() => downloadCertificatePdf(certificate)}><Download size={15} aria-hidden="true" />PDF</button></div>
+        </article>)}
+      </div>
+      <p className="text-xs text-hub-muted">Demo certificates are stored in this browser; production issuance uses the Django certificate API.</p>
+    </section>}
   </div>
 }
 

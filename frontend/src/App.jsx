@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import {
 	Building2,
 	BookOpen,
+	Award,
 	ChevronRight,
 	ClipboardList,
 	ChartNoAxesCombined,
 	CircleHelp,
 	GraduationCap,
+	LayoutDashboard,
 	Layers3,
 	LogOut,
 	RotateCcw,
@@ -19,10 +21,13 @@ import { CurriculumManager } from './CurriculumScreens.jsx'
 import { SessionManager } from './SessionScreens.jsx'
 import { AssessmentManager, StudentAssessments } from './AssessmentScreens.jsx'
 import { ResultsManager } from './ResultsScreens.jsx'
+import { PublicCertificateVerification, StudentCertificateScreen } from './CertificateScreens.jsx'
+import { DashboardScreen } from './DashboardScreens.jsx'
 import { mockApi } from './api/mockApi.js'
 
 const NAV_ITEMS = {
 	SUPER_ADMIN: [
+		{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
 		{ id: 'cohorts', label: 'Cohorts', icon: GraduationCap },
 		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
 		{ id: 'results', label: 'Results', icon: ChartNoAxesCombined },
@@ -31,6 +36,7 @@ const NAV_ITEMS = {
 		{ id: 'branches', label: 'Branches', icon: Building2 },
 	],
 	BRANCH_ADMIN: [
+		{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
 		{ id: 'cohorts', label: 'Cohorts', icon: GraduationCap },
 		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
 		{ id: 'results', label: 'Results', icon: ChartNoAxesCombined },
@@ -39,14 +45,20 @@ const NAV_ITEMS = {
 		{ id: 'branch-info', label: 'My branch', icon: Building2 },
 	],
 	INSTRUCTOR: [
+		{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
 		{ id: 'cohorts', label: 'My cohorts', icon: GraduationCap },
 		{ id: 'assessments', label: 'Assessments', icon: ClipboardList },
 		{ id: 'results', label: 'Results', icon: ChartNoAxesCombined },
 	],
-	STUDENT: [{ id: 'assessments', label: 'My assessments', icon: ClipboardList }],
+	STUDENT: [
+		{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+		{ id: 'assessments', label: 'My assessments', icon: ClipboardList },
+		{ id: 'certificates', label: 'Certificates', icon: Award },
+	],
 }
 
 const PAGE_TITLES = {
+	dashboard: 'Dashboard',
 	cohorts: 'Cohort management',
 	curricula: 'Curriculum management',
 	'cohort-detail': 'Cohort detail',
@@ -72,11 +84,12 @@ function roleName(role) {
 
 export default function App() {
 	const [snapshot, setSnapshot] = useState(null)
-	const [view, setView] = useState('cohorts')
+	const [view, setView] = useState('dashboard')
 	const [selectedCohortId, setSelectedCohortId] = useState(null)
 	const [busy, setBusy] = useState(false)
 	const [notice, setNotice] = useState('')
 	const [loadError, setLoadError] = useState('')
+	const verificationReference = new URLSearchParams(window.location.search).get('verify')
 	const refreshAssessment = useCallback(async () => {
 		setSnapshot(await mockApi.snapshot())
 	}, [])
@@ -87,7 +100,6 @@ export default function App() {
 			.then((data) => {
 				if (active) {
 					setSnapshot(data)
-					if (data.currentUser?.application_role === 'STUDENT') setView('assessments')
 				}
 			})
 			.catch(() => {
@@ -101,6 +113,10 @@ export default function App() {
 		const timeout = window.setTimeout(() => setNotice(''), 3500)
 		return () => window.clearTimeout(timeout)
 	}, [notice])
+
+	if (verificationReference !== null) {
+		return <PublicCertificateVerification initialReference={verificationReference} />
+	}
 
 	async function mutate(action, successMessage) {
 		setBusy(true)
@@ -120,7 +136,7 @@ export default function App() {
 		try {
 			const data = await mockApi.signIn(userId)
 			setSnapshot(data)
-			setView(data.currentUser.application_role === 'STUDENT' ? 'assessments' : 'cohorts')
+			setView('dashboard')
 		} catch (error) {
 			setLoadError(error.message)
 		} finally {
@@ -130,7 +146,7 @@ export default function App() {
 
 	async function signOut() {
 		setSnapshot(await mockApi.signOut())
-		setView('cohorts')
+		setView('dashboard')
 		setSelectedCohortId(null)
 	}
 
@@ -138,7 +154,7 @@ export default function App() {
 		setBusy(true)
 		try {
 			setSnapshot(await mockApi.resetDemo())
-			setView('cohorts')
+			setView('dashboard')
 			setSelectedCohortId(null)
 			setNotice('Demo data reset to its starting state.')
 		} finally {
@@ -252,6 +268,23 @@ export default function App() {
 		return mutate(() => mockApi.finalizeGraduationResults(cohortId, currentUser), 'Results finalized.')
 	}
 
+	async function issueCertificates(cohortId, studentIds) {
+		return mutate(() => mockApi.issueCertificates(cohortId, studentIds, currentUser), 'Certificates issued in this demo.')
+	}
+
+	async function markNotificationRead(notificationId) {
+		return mutate(() => mockApi.markNotificationRead(notificationId, currentUser), 'Notification marked as read.')
+	}
+
+	async function postAnnouncement(input) {
+		return mutate(() => mockApi.postAnnouncement(input, currentUser), 'Announcement published in this demo.')
+	}
+
+	function openCohortSessions(cohortId) {
+		setSelectedCohortId(cohortId)
+		setView('sessions')
+	}
+
 	function navigate(nextView) {
 		setView(nextView)
 		setSelectedCohortId(null)
@@ -301,12 +334,14 @@ export default function App() {
 					</header>
 
 					<main className="mx-auto min-h-[calc(100vh-118px)] w-full max-w-[1500px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+						{view === 'dashboard' && <DashboardScreen snapshot={snapshot} user={currentUser} busy={busy} onNavigate={navigate} onOpenCohort={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} onOpenSessions={openCohortSessions} onMarkNotificationRead={markNotificationRead} onPostAnnouncement={postAnnouncement} />}
 						{view === 'cohorts' && <CohortBoard cohorts={visibleCohorts} branches={visibleBranches} users={snapshot.users} isSuperAdmin={isSuperAdmin} canCreate={isSuperAdmin || currentUser.application_role === 'BRANCH_ADMIN'} onCreate={() => { setSelectedCohortId(null); setView('cohort-wizard') }} onOpen={(id) => { setSelectedCohortId(id); setView('cohort-detail') }} />}
 						{view === 'cohort-wizard' && <CohortWizard cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} curricula={visibleCurricula} curriculumVersions={visibleCurriculumVersions} user={currentUser} busy={busy} onCancel={() => setView(selectedCohort ? 'cohort-detail' : 'cohorts')} onSave={saveCohort} />}
 						{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => mockApi.addStudent(cohortId, studentId, currentUser), 'Student enrolled in this demo.')} onRemoveStudent={(cohortId, studentId) => mutate(() => mockApi.removeStudent(cohortId, studentId, currentUser), 'Student removed from this demo.')} />}
 						{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
 						{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
-						{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} />}
+						{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} onIssueCertificates={issueCertificates} />}
+						{view === 'certificates' && currentUser.application_role === 'STUDENT' && <StudentCertificateScreen certificates={snapshot.certificates} />}
 						{view === 'users' && <UserManager users={snapshot.users} branches={visibleBranches} currentUser={currentUser} busy={busy} onSave={saveUser} />}
 						{view === 'curricula' && <CurriculumManager curricula={visibleCurricula} versions={visibleCurriculumVersions} branches={visibleBranches} user={currentUser} busy={busy} onCreate={createCurriculum} onUpdate={saveCurriculum} onCreateVersion={createCurriculumVersion} onSaveVersion={saveCurriculumVersion} onPublish={publishCurriculumVersion} />}
 						{view === 'branches' && isSuperAdmin && <BranchManager branches={snapshot.branches} users={snapshot.users} cohorts={snapshot.cohorts} busy={busy} onSave={saveBranch} />}
