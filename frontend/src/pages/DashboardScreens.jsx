@@ -1,14 +1,11 @@
 import { useState } from 'react'
 import {
   ArrowRight,
-  BookOpen,
   Building2,
   CalendarDays,
   CheckCircle2,
-  ChartNoAxesCombined,
   ClipboardList,
   GraduationCap,
-  ShieldCheck,
   UsersRound,
 } from 'lucide-react'
 import { calculateGraduationReport } from '../services/api.js'
@@ -149,16 +146,6 @@ function SuperAdminDashboard({ snapshot, user, onNavigate, onOpenCohort, onOpenS
     { label: 'Attendance', value: attendance.percentage == null ? '—' : `${attendance.percentage}%` },
     { label: 'Eligible results', value: eligible.length, detail: 'Across cohort results' },
   ]
-  const actions = [
-    { label: 'Branches', icon: Building2, view: 'branches' },
-    { label: 'People and roles', icon: UsersRound, view: 'users' },
-    { label: 'Cohorts', icon: GraduationCap, view: 'cohorts' },
-    { label: 'Curricula', icon: BookOpen, view: 'curricula' },
-    { label: 'Assessments', icon: ClipboardList, view: 'assessments' },
-    { label: 'Results', icon: ChartNoAxesCombined, view: 'results' },
-    { label: 'Account security', icon: ShieldCheck, view: 'security' },
-  ]
-
   return <div className="space-y-7">
     <header className="flex flex-wrap items-end justify-between gap-4 border-b border-hub-line pb-5">
       <div><h1 className="text-2xl font-semibold">Organization overview</h1><p className="mt-1 text-sm text-hub-muted">{displayName(user)} · Super Admin</p></div>
@@ -169,13 +156,6 @@ function SuperAdminDashboard({ snapshot, user, onNavigate, onOpenCohort, onOpenS
     </header>
 
     <MetricStrip metrics={metrics} />
-
-    <section aria-labelledby="management-heading">
-      <h2 id="management-heading" className="mb-3 border-b border-hub-line pb-2 text-base font-semibold">Management</h2>
-      <div className="grid grid-cols-2 border-l border-t border-hub-line bg-white sm:grid-cols-3 xl:grid-cols-4">
-        {actions.map(({ label, icon: Icon, view }) => <button key={view} type="button" onClick={() => onNavigate(view)} className="flex min-h-14 items-center gap-2 border-b border-r border-hub-line px-3 text-left text-sm font-semibold hover:bg-[#fbf8fc] hover:text-hub-purple"><Icon size={17} className="shrink-0 text-hub-purple" aria-hidden="true" /><span className="min-w-0 flex-1">{label}</span><ArrowRight size={14} className="shrink-0 text-hub-muted" aria-hidden="true" /></button>)}
-      </div>
-    </section>
 
     <div className="grid gap-8 xl:grid-cols-[minmax(0,1.3fr)_minmax(300px,.7fr)]">
       <Section title="Branch performance" icon={Building2} action={<button type="button" className={secondary} onClick={() => onNavigate('branches')}>Manage branches <ArrowRight size={14} aria-hidden="true" /></button>}>
