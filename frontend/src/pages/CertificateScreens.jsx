@@ -19,9 +19,9 @@ export function StudentCertificateScreen({ certificates }) {
           <div className="min-w-0">
             <h2 className="font-semibold">{certificate.cohort_name}</h2>
             <p className="mt-1 text-xs text-hub-muted">{certificate.certificate_number} · Issued {new Date(certificate.issued_at).toLocaleDateString()}</p>
-            <a className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-hub-purple underline underline-offset-2" href={`/?verify=${encodeURIComponent(certificate.verification_code)}`} target="_blank" rel="noreferrer">
+            {certificate.verification_url && <a className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-hub-purple underline underline-offset-2" href={`/?verify=${encodeURIComponent(certificate.verification_code)}`} target="_blank" rel="noreferrer">
               Verify certificate <ExternalLink size={13} aria-hidden="true" />
-            </a>
+            </a>}
           </div>
         </div>
         <button type="button" className={primary} onClick={() => downloadCertificatePdf(certificate)}>
@@ -31,7 +31,7 @@ export function StudentCertificateScreen({ certificates }) {
     </div> : <div className="border-y border-hub-line bg-white px-5 py-8">
       <ShieldCheck size={22} className="text-hub-muted" aria-hidden="true" />
       <h2 className="mt-3 font-semibold">No certificates yet</h2>
-      <p className="mt-1 text-sm text-hub-muted">Certificates appear here after your cohort administrator issues one.</p>
+      <p className="mt-1 text-sm text-hub-muted">Certificates appear here after your instructor or administrator uploads one.</p>
     </div>}
   </section>
 }

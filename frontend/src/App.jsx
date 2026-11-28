@@ -7,11 +7,12 @@ import {
 	ChartNoAxesCombined,
 	GraduationCap,
 	LayoutDashboard,
+	ShieldCheck,
 	UsersRound,
 } from 'lucide-react'
 import { AppShell } from './components/AppShell.jsx'
 import { LoadingScreen, LoginScreen, MissingCohort } from './components/AuthScreens.jsx'
-import { BranchInfo, BranchManager, UserManager } from './pages/AdminScreens.jsx'
+import { AccountSecurity, BranchInfo, BranchManager, UserManager } from './pages/AdminScreens.jsx'
 import { CohortBoard, CohortDetail, CohortWizard } from './pages/CohortScreens.jsx'
 import { CurriculumManager } from './pages/CurriculumScreens.jsx'
 import { SessionManager } from './pages/SessionScreens.jsx'
@@ -30,6 +31,7 @@ const NAV_ITEMS = {
 		{ id: 'curricula', label: 'Curricula', icon: BookOpen },
 		{ id: 'users', label: 'People', icon: UsersRound },
 		{ id: 'branches', label: 'Branches', icon: Building2 },
+		{ id: 'security', label: 'Account security', icon: ShieldCheck },
 	],
 	BRANCH_ADMIN: [
 		{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -65,6 +67,7 @@ const PAGE_TITLES = {
 	users: 'People management',
 	branches: 'Branch management',
 	'branch-info': 'Branch information',
+	security: 'Account security',
 }
 
 export default function App() {
@@ -130,9 +133,16 @@ export default function App() {
 	}
 
 	async function signOut() {
-		setSnapshot(await api.signOut())
-		setView('dashboard')
-		setSelectedCohortId(null)
+		setBusy(true)
+		try {
+			setSnapshot(await api.signOut())
+			setView('dashboard')
+			setSelectedCohortId(null)
+		} catch (error) {
+			setNotice(`Could not sign out: ${error.message}`)
+		} finally {
+			setBusy(false)
+		}
 	}
 
 	if (!snapshot) {
@@ -241,8 +251,17 @@ export default function App() {
 		return mutate(() => api.finalizeGraduationResults(cohortId, currentUser), 'Results finalized.')
 	}
 
-	async function issueCertificates(cohortId, studentIds) {
-		return mutate(() => api.issueCertificates(cohortId, studentIds, currentUser), 'Certificates issued.')
+	async function uploadCertificate(cohortId, studentId, file) {
+		return mutate(() => api.uploadCertificate(cohortId, studentId, file), 'Certificate uploaded.')
+	}
+
+	async function changePassword(input) {
+		setBusy(true)
+		try {
+			await api.changePassword(input)
+		} finally {
+			setBusy(false)
+		}
 	}
 
 	function openCohortSessions(cohortId) {
@@ -277,11 +296,12 @@ export default function App() {
 			{view === 'cohort-detail' && selectedCohort && <CohortDetail cohort={selectedCohort} branches={visibleBranches} users={snapshot.users} user={currentUser} busy={busy} onBack={() => setView('cohorts')} onEdit={() => setView('cohort-wizard')} onSessions={() => setView('sessions')} onSave={updateCohort} onAddStudent={(cohortId, studentId) => mutate(() => api.addStudent(cohortId, studentId, currentUser), 'Student enrolled.')} onRemoveStudent={(cohortId, studentId) => mutate(() => api.removeStudent(cohortId, studentId, currentUser), 'Student removed.')} />}
 			{view === 'sessions' && selectedCohort && <SessionManager cohort={selectedCohort} sessions={snapshot.sessions.filter((session) => session.cohort === selectedCohort.id)} users={snapshot.users} branches={visibleBranches} attendance={snapshot.attendance} attendanceReport={snapshot.attendanceReports.find((report) => report.cohort.id === selectedCohort.id)} currentUser={currentUser} busy={busy} onBack={() => setView('cohort-detail')} onSaveSession={saveSession} onRecordAttendance={recordAttendance} />}
 			{view === 'assessments' && (currentUser.application_role === 'STUDENT' ? <StudentAssessments snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} onRefresh={refreshAssessment} /> : <AssessmentManager snapshot={snapshot} user={currentUser} busy={busy} onAction={assessmentAction} />)}
-			{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} onIssueCertificates={issueCertificates} />}
+			{view === 'results' && currentUser.application_role !== 'STUDENT' && <ResultsManager snapshot={snapshot} user={currentUser} cohorts={visibleCohorts} busy={busy} onSaveRequirements={saveGraduationRequirements} onFinalize={finalizeGraduationResults} onUploadCertificate={uploadCertificate} />}
 			{view === 'certificates' && currentUser.application_role === 'STUDENT' && <StudentCertificateScreen certificates={snapshot.certificates} />}
 			{view === 'users' && <UserManager users={snapshot.users} branches={visibleBranches} currentUser={currentUser} busy={busy} onSave={saveUser} />}
 			{view === 'curricula' && <CurriculumManager curricula={visibleCurricula} versions={visibleCurriculumVersions} branches={visibleBranches} user={currentUser} busy={busy} onCreate={createCurriculum} onUpdate={saveCurriculum} onCreateVersion={createCurriculumVersion} onSaveVersion={saveCurriculumVersion} onPublish={publishCurriculumVersion} />}
 			{view === 'branches' && isSuperAdmin && <BranchManager branches={snapshot.branches} users={snapshot.users} cohorts={snapshot.cohorts} busy={busy} onSave={saveBranch} />}
+			{view === 'security' && isSuperAdmin && <AccountSecurity busy={busy} onChangePassword={changePassword} />}
 			{view === 'branch-info' && !isSuperAdmin && <BranchInfo branch={currentBranch} users={snapshot.users} cohorts={visibleCohorts} />}
 			{view === 'cohort-detail' && !selectedCohort && <MissingCohort onBack={() => setView('cohorts')} />}
 		</AppShell>

@@ -1,4 +1,9 @@
+from io import StringIO
+from unittest.mock import patch
+
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
@@ -116,6 +121,7 @@ class AuthenticationTests(APITestCase):
         self.branch = Branch.objects.create(name="Central")
         self.user = User.objects.create_user(
             username="student-user",
+            email="student@example.com",
             password="OldPassword123!",
             application_role=User.ApplicationRole.STUDENT,
             branch=self.branch,
@@ -138,6 +144,24 @@ class AuthenticationTests(APITestCase):
             {"username": "student-user", "password": "wrong-password"},
         )
 
+        self.assertEqual(response.status_code, 400)
+
+    def test_login_accepts_email_case_insensitively(self):
+        response = self.client.post(
+            "/api/accounts/login/",
+            {"username": "STUDENT@example.com", "password": "OldPassword123!"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], self.user.pk)
+
+    def test_login_rejects_ambiguous_identifier(self):
+        User.objects.create_user(
+            username="other-user", email="STUDENT@example.com", password="OldPassword123!", branch=self.branch,
+        )
+        response = self.client.post(
+            "/api/accounts/login/",
+            {"username": "student@example.com", "password": "OldPassword123!"},
+        )
         self.assertEqual(response.status_code, 400)
 
     def test_profile_requires_authentication(self):
@@ -180,6 +204,34 @@ class AuthenticationTests(APITestCase):
 
     def refresh_user(self):
         self.user.refresh_from_db()
+
+
+class CreateAppSuperAdminTests(TestCase):
+    @patch("apps.accounts.management.commands.create_app_super_admin.getpass.getpass")
+    def test_creates_application_admin_without_django_admin_access(self, password_prompt):
+        password_prompt.side_effect = ["SecurePass123!", "SecurePass123!"]
+        call_command("create_app_super_admin", "ADMIN@example.com", stdout=StringIO())
+        user = User.objects.get(email="admin@example.com")
+        self.assertEqual(user.application_role, User.ApplicationRole.SUPER_ADMIN)
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertTrue(user.check_password("SecurePass123!"))
+        response = self.client.post("/api/accounts/login/", {"username": "admin@example.com", "password": "SecurePass123!"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["application_role"], "SUPER_ADMIN")
+
+    @patch("apps.accounts.management.commands.create_app_super_admin.getpass.getpass")
+    def test_rejects_mismatched_passwords(self, password_prompt):
+        password_prompt.side_effect = ["SecurePass123!", "OtherPass123!"]
+        with self.assertRaises(CommandError):
+            call_command("create_app_super_admin", "admin@example.com", stdout=StringIO())
+        self.assertFalse(User.objects.filter(email="admin@example.com").exists())
+
+    def test_rejects_duplicate_email_before_prompting(self):
+        branch = Branch.objects.create(name="Existing branch")
+        User.objects.create_user(username="existing", email="admin@example.com", password="SecurePass123!", branch=branch)
+        with self.assertRaises(CommandError):
+            call_command("create_app_super_admin", "ADMIN@example.com", stdout=StringIO())
 
 
 class ApplicationAuthorizationTests(APITestCase):
@@ -268,6 +320,20 @@ class BranchAndUserProvisioningTests(APITestCase):
             application_role=User.ApplicationRole.BRANCH_ADMIN,
             branch=self.central,
         )
+
+    def test_account_username_cannot_match_an_existing_email(self):
+        User.objects.create_user(username="existing", email="admin@example.com", password="SecurePass123!", branch=self.central)
+        self.client.force_login(self.branch_admin)
+        response = self.client.post("/api/accounts/users/", {
+            "username": "admin@example.com", "password": "SecurePass123!", "application_role": "STUDENT",
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_account_email_cannot_match_an_existing_username(self):
+        User.objects.create_user(username="admin@example.com", password="SecurePass123!", branch=self.central)
+        self.client.force_login(self.branch_admin)
+        response = self.client.patch(f"/api/accounts/users/{self.branch_admin.pk}/", {"email": "admin@example.com"}, format="json")
+        self.assertEqual(response.status_code, 400)
 
     def test_super_admin_can_create_and_edit_branch(self):
         self.client.force_login(self.super_admin)

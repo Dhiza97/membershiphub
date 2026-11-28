@@ -7,7 +7,7 @@ from io import BytesIO
 
 from django.http import FileResponse
 from django.db import transaction
-from django.db.models import Q, QuerySet
+from django.db.models import BooleanField, Case, Q, QuerySet, Value, When
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -58,6 +58,7 @@ from .serializers import (
     AssessmentStudentSerializer,
     BranchSerializer,
     CertificateSerializer,
+    CertificateUploadSerializer,
     CohortFilterSerializer,
     CohortSerializer,
     CurriculumSerializer,
@@ -1193,75 +1194,48 @@ class CohortResultsHistoryView(CohortScopeMixin, APIView):
         return Response([{"id": item.pk, "finalized_at": item.finalized_at, "report": item.report} for item in snapshots])
 
 
+def certificate_list_queryset():
+    return Certificate.objects.select_related("student", "cohort").defer("pdf_data").annotate(
+        has_uploaded_pdf=Case(
+            When(pdf_data__isnull=False, then=Value(True)),
+            default=Value(False),
+            output_field=BooleanField(),
+        )
+    )
+
+
 class CohortCertificateListIssueView(CohortScopeMixin, APIView):
-    permission_classes = (IsAuthenticated, IsCohortManager)
+    permission_classes = (IsAuthenticated, IsSessionOperator)
 
     def get(self, request, cohort_id):
         cohort = self.get_cohort()
-        certificates = Certificate.objects.filter(cohort=cohort).select_related("student", "cohort")
+        certificates = certificate_list_queryset().filter(cohort=cohort)
         return Response(CertificateSerializer(certificates, many=True, context={"request": request}).data)
 
     @transaction.atomic
     def post(self, request, cohort_id):
         cohort = self.get_cohort()
         cohort = Cohort.objects.select_for_update().get(pk=cohort.pk)
-        requirements = GraduationRequirements.objects.filter(cohort=cohort).first()
-        if requirements is None:
-            raise ValidationError({"requirements": "Set graduation requirements before issuing certificates."})
-
-        report = build_graduation_report(cohort, requirements)
-        eligible_rows = {
-            row["student"]["id"]: row
-            for row in report["students"]
-            if row["eligibility"] == "ELIGIBLE"
-        }
-        requested_ids = request.data.get("student_ids")
-        if requested_ids is None:
-            student_ids = list(eligible_rows)
-        else:
-            if (
-                not isinstance(requested_ids, list)
-                or not requested_ids
-                or any(not isinstance(student_id, int) or isinstance(student_id, bool) for student_id in requested_ids)
-            ):
-                raise ValidationError({"student_ids": "Provide a non-empty list of student IDs."})
-            if len(requested_ids) != len(set(requested_ids)):
-                raise ValidationError({"student_ids": "A student can only be listed once."})
-            student_ids = requested_ids
-
-        ineligible_ids = [student_id for student_id in student_ids if student_id not in eligible_rows]
-        if ineligible_ids:
-            raise ValidationError({"student_ids": f"Students are not currently eligible: {ineligible_ids}."})
-        if not student_ids:
-            raise ValidationError({"students": "There are no eligible students to issue certificates to."})
-
-        created_count = 0
-        certificates = []
-        for student_id in student_ids:
-            row = eligible_rows[student_id]
-            student = Enrollment.objects.select_related("student").get(cohort=cohort, student_id=student_id).student
-            certificate, created = Certificate.objects.get_or_create(
-                cohort=cohort,
-                student=student,
-                defaults={
-                    "student_name": " ".join(filter(None, (student.first_name, student.last_name))) or student.username,
-                    "cohort_name": cohort.name,
-                    "branch_name": cohort.branch.name,
-                    "attendance_percentage": Decimal(str(row["attendance_percentage"])),
-                    "assessment_average": Decimal(str(row["assessment_average"])),
-                    "minimum_attendance": requirements.minimum_attendance,
-                    "minimum_assessment_score": requirements.minimum_assessment_score,
-                    "issued_by": request.user,
-                },
-            )
-            created_count += int(created)
-            certificates.append(certificate)
-
-        return Response({
-            "issued": created_count,
-            "already_issued": len(certificates) - created_count,
-            "certificates": CertificateSerializer(certificates, many=True, context={"request": request}).data,
-        }, status=201 if created_count else 200)
+        serializer = CertificateUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        student_id = serializer.validated_data["student"]
+        enrollment = Enrollment.objects.select_related("student").filter(cohort=cohort, student_id=student_id).first()
+        if enrollment is None:
+            raise ValidationError({"student": "Select a student enrolled in this cohort."})
+        if Certificate.objects.filter(cohort=cohort, student_id=student_id).exists():
+            raise ValidationError({"student": "This student already has a certificate for this cohort."})
+        student = enrollment.student
+        certificate = Certificate.objects.create(
+            cohort=cohort,
+            student=student,
+            student_name=student.get_full_name() or student.username,
+            cohort_name=cohort.name,
+            branch_name=cohort.branch.name,
+            pdf_data=serializer.validated_data["file"].read(),
+            issued_by=request.user,
+        )
+        certificate.has_uploaded_pdf = True
+        return Response(CertificateSerializer(certificate, context={"request": request}).data, status=201)
 
 
 class StudentCertificateListView(APIView):
@@ -1270,7 +1244,7 @@ class StudentCertificateListView(APIView):
     def get(self, request):
         if request.user.application_role != User.ApplicationRole.STUDENT:
             raise PermissionDenied("Only students can access their certificates here.")
-        certificates = Certificate.objects.filter(student=request.user).select_related("student", "cohort")
+        certificates = certificate_list_queryset().filter(student=request.user)
         return Response(CertificateSerializer(certificates, many=True, context={"request": request}).data)
 
 
@@ -1287,27 +1261,33 @@ class CertificateDownloadView(APIView):
         is_admin = user.is_super_admin() or (
             user.is_branch_admin() and certificate.cohort.branch.pk == user.branch_id
         )
-        if not (is_owner or is_admin):
+        is_instructor = user.application_role == User.ApplicationRole.INSTRUCTOR and certificate.cohort.instructor_id == user.pk
+        if not (is_owner or is_admin or is_instructor):
             raise PermissionDenied("You cannot download this certificate.")
 
-        verification_url = request.build_absolute_uri(reverse(
-            "certificate-verify",
-            kwargs={"verification_code": certificate.verification_code},
-        ))
-        pdf = render_certificate_pdf(certificate, verification_url)
-        return FileResponse(
+        if certificate.pdf_data is not None:
+            pdf = bytes(certificate.pdf_data)
+        else:
+            verification_url = request.build_absolute_uri(reverse(
+                "certificate-verify",
+                kwargs={"verification_code": certificate.verification_code},
+            ))
+            pdf = render_certificate_pdf(certificate, verification_url)
+        response = FileResponse(
             BytesIO(pdf),
             as_attachment=True,
             filename=f"{certificate.certificate_number}.pdf",
             content_type="application/pdf",
         )
+        response["X-Content-Type-Options"] = "nosniff"
+        return response
 
 
 class CertificateVerificationView(APIView):
     permission_classes = (AllowAny,)
 
     def get(self, request, verification_code):
-        certificate = Certificate.objects.filter(verification_code=verification_code).first()
+        certificate = Certificate.objects.filter(verification_code=verification_code, pdf_data__isnull=True).first()
         if certificate is None:
             raise NotFound("No certificate matches this verification reference.")
         return Response({

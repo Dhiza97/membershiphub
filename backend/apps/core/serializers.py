@@ -1000,9 +1000,23 @@ class GraduationRequirementsSerializer(serializers.ModelSerializer):
         return assessments
 
 
+class CertificateUploadSerializer(serializers.Serializer):
+    student = serializers.IntegerField(min_value=1)
+    file = serializers.FileField()
+
+    def validate_file(self, value):
+        if value.size > 10 * 1024 * 1024:
+            raise serializers.ValidationError("The PDF must be 10 MB or smaller.")
+        if value.read(5) != b"%PDF-":
+            raise serializers.ValidationError("Upload a valid PDF file.")
+        value.seek(0)
+        return value
+
+
 class CertificateSerializer(serializers.ModelSerializer):
     download_url = serializers.SerializerMethodField()
     verification_url = serializers.SerializerMethodField()
+    has_uploaded_pdf = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Certificate
@@ -1020,6 +1034,7 @@ class CertificateSerializer(serializers.ModelSerializer):
             "minimum_assessment_score",
             "verification_code",
             "issued_at",
+            "has_uploaded_pdf",
             "download_url",
             "verification_url",
         )
@@ -1034,4 +1049,6 @@ class CertificateSerializer(serializers.ModelSerializer):
         return self._absolute_url("certificate-download", {"certificate_id": obj.pk})
 
     def get_verification_url(self, obj):
+        if obj.has_uploaded_pdf:
+            return None
         return self._absolute_url("certificate-verify", {"verification_code": obj.verification_code})

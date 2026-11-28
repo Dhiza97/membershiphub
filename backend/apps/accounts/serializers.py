@@ -4,6 +4,7 @@ from typing import cast
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
+from django.db.models import Q
 from rest_framework import serializers
 
 from apps.core.models import Branch
@@ -16,12 +17,18 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate(self, attrs):
+        identifier = attrs["username"].strip()
+        matches = list(User.objects.filter(
+            Q(username=identifier) | Q(email__iexact=identifier)
+        ).values_list("username", flat=True)[:2])
+        if len(matches) != 1:
+            raise serializers.ValidationError("Invalid email or username or password.")
         user = authenticate(
-            username=attrs["username"],
+            username=matches[0],
             password=attrs["password"],
         )
         if user is None:
-            raise serializers.ValidationError("Invalid username or password.")
+            raise serializers.ValidationError("Invalid email or username or password.")
         if not user.is_active:
             raise serializers.ValidationError("This account is inactive.")
         attrs["user"] = user
@@ -126,14 +133,14 @@ class ManagedUserCreateSerializer(serializers.Serializer):
         username = value.strip()
         if not username:
             raise serializers.ValidationError("Username cannot be blank.")
-        if User.objects.filter(username__iexact=username).exists():
-            raise serializers.ValidationError("A user with this username already exists.")
+        if User.objects.filter(Q(username__iexact=username) | Q(email__iexact=username)).exists():
+            raise serializers.ValidationError("This username is already used as a username or email address.")
         return username
 
     def validate_email(self, value):
         email = value.strip().lower()
-        if email and User.objects.filter(email__iexact=email).exists():
-            raise serializers.ValidationError("A user with this email already exists.")
+        if email and User.objects.filter(Q(email__iexact=email) | Q(username=email)).exists():
+            raise serializers.ValidationError("This email is already used as an email address or username.")
         return email
 
     def validate_password(self, value):
@@ -203,6 +210,12 @@ class ManagedUserUpdateSerializer(serializers.ModelSerializer):
             "application_role",
             "branch",
         )
+
+    def validate_email(self, value):
+        email = value.strip().lower()
+        if email and User.objects.filter(Q(email__iexact=email) | Q(username=email)).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError("This email is already used as an email address or username.")
+        return email
 
     def validate(self, attrs):
         actor = self.context["request"].user

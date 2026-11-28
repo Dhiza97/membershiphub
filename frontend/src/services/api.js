@@ -19,9 +19,9 @@ function errorText(value) {
 
 async function request(path, { method = 'GET', body } = {}) {
   const headers = { Accept: 'application/json' }
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  if (body !== undefined && !(body instanceof FormData)) headers['Content-Type'] = 'application/json'
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers['X-CSRFToken'] = decodeURIComponent(cookie('csrftoken') || '')
-  const response = await fetch(`/api/${path}`, { method, headers, credentials: 'same-origin', ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+  const response = await fetch(`/api/${path}`, { method, headers, credentials: 'same-origin', ...(body !== undefined ? { body: body instanceof FormData ? body : JSON.stringify(body) } : {}) })
   const data = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok) {
     const error = new Error(errorText(data) || `Request failed (${response.status}).`)
@@ -94,7 +94,7 @@ async function snapshot() {
     const [sessions, requirements, report, history, certificates, attendanceReport] = await Promise.all([
       request(`cohorts/${cohort.id}/sessions/`), request(`cohorts/${cohort.id}/graduation-requirements/`),
       request(`cohorts/${cohort.id}/results/`), request(`cohorts/${cohort.id}/results/history/`),
-      isManager ? request(`cohorts/${cohort.id}/certificates/`) : Promise.resolve([]),
+      request(`cohorts/${cohort.id}/certificates/`),
       request(`cohorts/${cohort.id}/attendance-report/`),
     ])
     data.sessions.push(...sessions)
@@ -116,6 +116,7 @@ async function change(path, method, body) {
 
 export const api = {
   snapshot,
+  changePassword(input) { return request('accounts/password/change/', { method: 'POST', body: input }) },
   async signIn(credentials) {
     await request('health/')
     await request('accounts/login/', { method: 'POST', body: credentials })
@@ -171,7 +172,12 @@ export const api = {
   },
   saveGraduationRequirements(id, input) { return change(`cohorts/${id}/graduation-requirements/`, 'PUT', input) },
   finalizeGraduationResults(id) { return change(`cohorts/${id}/results/finalize/`, 'POST', {}) },
-  issueCertificates(id, studentIds) { return change(`cohorts/${id}/certificates/`, 'POST', { student_ids: studentIds }) },
+  uploadCertificate(id, studentId, file) {
+    const body = new FormData()
+    body.append('student', studentId)
+    body.append('file', file)
+    return change(`cohorts/${id}/certificates/`, 'POST', body)
+  },
   async verifyCertificate(reference) {
     try { return await request(`certificates/verify/${encodeURIComponent(reference.trim())}/`) }
     catch (error) { if (error.status === 404) return null; throw error }

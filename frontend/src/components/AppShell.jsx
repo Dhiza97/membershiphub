@@ -10,7 +10,7 @@ export function BrandMark() {
 }
 
 function Avatar({ user, small = false }) {
-	const initials = `${user.first_name?.[0] ?? ''}${user.last_name?.[0] ?? ''}` || user.username.slice(0, 2)
+	const initials = `${user.first_name?.[0] ?? ''}${user.last_name?.[0] ?? ''}` || (user.email || user.username).slice(0, 2)
 	return <span className={`grid shrink-0 place-items-center bg-hub-ink font-bold text-white ${small ? 'size-7 text-[10px]' : 'size-9 text-xs'}`}>{initials}</span>
 }
 
@@ -31,6 +31,7 @@ export function AppShell({
 	currentBranch,
 	isSuperAdmin,
 	pageTitle,
+	busy,
 	notice,
 	onNavigate,
 	onSignOut,
@@ -58,7 +59,7 @@ export function AppShell({
 							<Avatar user={currentUser} />
 							<div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{displayName(currentUser)}</p><p className="truncate text-xs text-hub-muted">{roleName(currentUser.application_role)}</p></div>
 						</div>
-						<button type="button" onClick={onSignOut} className="mt-4 flex min-h-9 w-full items-center gap-2 px-2 text-xs font-semibold text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink"><LogOut size={15} aria-hidden="true" />Sign out</button>
+						<button type="button" onClick={onSignOut} disabled={busy} className="mt-4 flex min-h-9 w-full items-center gap-2 px-2 text-xs font-semibold text-hub-muted hover:bg-[#f5f3f6] hover:text-hub-ink disabled:opacity-50"><LogOut size={15} aria-hidden="true" />Sign out</button>
 					</div>
 				</aside>
 
@@ -68,7 +69,7 @@ export function AppShell({
 							<div className="flex min-w-0 items-center gap-2 lg:hidden"><BrandMark /><span className="truncate text-xs font-bold">MembershipHub</span></div>
 							<div className="hidden min-w-0 items-center gap-2 text-xs text-hub-muted lg:flex"><span>{workspace}</span><ChevronRight size={14} aria-hidden="true" /><span className="font-semibold text-hub-ink">{pageTitle}</span></div>
 							<div className="ml-auto flex items-center gap-2 sm:gap-4">
-								<button type="button" onClick={onSignOut} className="flex min-h-9 items-center gap-2 border-l border-hub-line pl-3 text-xs font-semibold text-hub-muted hover:text-hub-ink lg:hidden"><Avatar user={currentUser} small /><span className="sr-only">Sign out</span></button>
+								<button type="button" onClick={onSignOut} disabled={busy} className="flex min-h-9 items-center gap-2 border-l border-hub-line pl-3 text-xs font-semibold text-hub-muted hover:text-hub-ink disabled:opacity-50 lg:hidden"><Avatar user={currentUser} small /><span className="sr-only">Sign out</span></button>
 							</div>
 						</div>
 						<nav aria-label="Mobile navigation" className="flex gap-1 overflow-x-auto border-t border-hub-line px-3 py-1.5 lg:hidden">

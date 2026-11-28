@@ -22,7 +22,7 @@ export function LoginScreen({ busy, error, onSignIn }) {
 				<form className="w-full max-w-sm space-y-5" onSubmit={submit}>
 					<div><h2 className="text-2xl font-semibold">Sign in</h2><p className="mt-2 text-sm text-hub-muted">Use your MembershipHub account.</p></div>
 					{error && <p role="alert" className="mt-5 border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">{error}</p>}
-					<label className="block text-sm font-medium">Username<input name="username" autoComplete="username" required className="mt-1.5 min-h-11 w-full border border-hub-line px-3" /></label>
+					<label className="block text-sm font-medium">Email or username<input name="username" autoComplete="username" required className="mt-1.5 min-h-11 w-full border border-hub-line px-3" /></label>
 					<label className="block text-sm font-medium">Password<input name="password" type="password" autoComplete="current-password" required className="mt-1.5 min-h-11 w-full border border-hub-line px-3" /></label>
 					<button disabled={busy} className="min-h-11 w-full bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50">{busy ? 'Signing in...' : 'Sign in'}</button>
 				</form>

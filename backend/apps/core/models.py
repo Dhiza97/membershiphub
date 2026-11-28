@@ -942,10 +942,11 @@ class Certificate(models.Model):
     student_name = models.CharField(max_length=240)
     cohort_name = models.CharField(max_length=150)
     branch_name = models.CharField(max_length=150)
-    attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2)
-    assessment_average = models.DecimalField(max_digits=5, decimal_places=2)
-    minimum_attendance = models.DecimalField(max_digits=5, decimal_places=2)
-    minimum_assessment_score = models.DecimalField(max_digits=5, decimal_places=2)
+    attendance_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    assessment_average = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    minimum_attendance = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    minimum_assessment_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    pdf_data = models.BinaryField(null=True, editable=False)
     issued_by = models.ForeignKey(
         "accounts.User",
         on_delete=models.SET_NULL,

@@ -9,7 +9,7 @@ const ROLE_LABELS = {
 }
 
 function nameOf(user) {
-  return [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.username || 'Unnamed account'
+  return [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.email || user?.username || 'Unnamed account'
 }
 
 function countLabel(count, singular) {
@@ -33,6 +33,42 @@ function FormSelect({ label, children, ...props }) {
       <ChevronDown className="pointer-events-none absolute bottom-3 right-3 text-hub-muted" size={16} aria-hidden="true" />
     </label>
   )
+}
+
+export function AccountSecurity({ busy, onChangePassword }) {
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  async function submit(event) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const values = new FormData(form)
+    setError('')
+    setSuccess(false)
+    if (values.get('new_password') !== values.get('confirm_password')) {
+      setError('The new passwords do not match.')
+      return
+    }
+    try {
+      await onChangePassword({ old_password: values.get('old_password'), new_password: values.get('new_password') })
+      form.reset()
+      setSuccess(true)
+    } catch (failure) {
+      setError(failure.message)
+    }
+  }
+
+  return <section className="space-y-5">
+    <div className="border-b border-hub-line pb-5"><h1 className="text-2xl font-semibold">Account security</h1><p className="mt-1 text-sm text-hub-muted">Change your password</p></div>
+    <form onSubmit={submit} className="max-w-xl space-y-4 border-y border-hub-line bg-white p-5">
+      {error && <p role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">{error}</p>}
+      {success && <p role="status" className="border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">Password changed.</p>}
+      <FormInput label="Current password" name="old_password" type="password" autoComplete="current-password" required />
+      <FormInput label="New password" name="new_password" type="password" autoComplete="new-password" required />
+      <FormInput label="Confirm new password" name="confirm_password" type="password" autoComplete="new-password" required />
+      <button disabled={busy} className="min-h-10 bg-hub-purple px-4 text-sm font-semibold text-white hover:bg-hub-purple-dark disabled:opacity-50">{busy ? 'Saving...' : 'Change password'}</button>
+    </form>
+  </section>
 }
 
 export function BranchManager({ branches, users, cohorts, busy, onSave }) {
@@ -208,7 +244,8 @@ export function UserManager({ users, branches, currentUser, busy, onSave }) {
     event.preventDefault()
     setError('')
     const formData = new FormData(event.currentTarget)
-    const role = isSuperAdmin ? formData.get('application_role') : editing.application_role
+    const isOrganizationAccount = editing.application_role === 'SUPER_ADMIN'
+    const role = isOrganizationAccount ? undefined : isSuperAdmin ? formData.get('application_role') : editing.application_role
     try {
       await onSave({
         id: editing.id,
@@ -218,7 +255,7 @@ export function UserManager({ users, branches, currentUser, busy, onSave }) {
         email: formData.get('email'),
         password: formData.get('password'),
         application_role: role,
-        branch: isSuperAdmin ? Number(formData.get('branch')) : currentUser.branch,
+        branch: isOrganizationAccount ? undefined : isSuperAdmin ? Number(formData.get('branch')) : currentUser.branch,
         is_active: formData.get('is_active') === 'on',
       })
       setEditing(null)
@@ -247,7 +284,9 @@ export function UserManager({ users, branches, currentUser, busy, onSave }) {
             <FormInput label="First name" name="first_name" defaultValue={editing.first_name} maxLength={150} />
             <FormInput label="Last name" name="last_name" defaultValue={editing.last_name} maxLength={150} />
             <FormInput label="Email" name="email" type="email" defaultValue={editing.email} />
-            {isSuperAdmin ? (
+            {editing.application_role === 'SUPER_ADMIN' ? (
+              <div className="text-sm font-medium">Role<span className="mt-1.5 flex min-h-11 items-center border border-hub-line bg-[#f4f2f4] px-3 font-normal text-hub-muted">Super Admin</span></div>
+            ) : isSuperAdmin ? (
               <FormSelect label="Role" name="application_role" value={editing.application_role} onChange={(event) => setEditing((current) => ({ ...current, application_role: event.target.value }))}>
                 <option value="STUDENT">Student</option><option value="INSTRUCTOR">Instructor</option><option value="BRANCH_ADMIN">Branch Admin</option>
               </FormSelect>
@@ -258,7 +297,9 @@ export function UserManager({ users, branches, currentUser, busy, onSave }) {
                 <option value="STUDENT">Student</option><option value="INSTRUCTOR">Instructor</option>
               </FormSelect>
             )}
-            {isSuperAdmin ? (
+            {editing.application_role === 'SUPER_ADMIN' ? (
+              <div className="text-sm font-medium">Branch<span className="mt-1.5 flex min-h-11 items-center border border-hub-line bg-[#f4f2f4] px-3 font-normal text-hub-muted">Organization</span></div>
+            ) : isSuperAdmin ? (
               <FormSelect label="Branch" name="branch" value={editing.branch} onChange={(event) => setEditing((current) => ({ ...current, branch: Number(event.target.value) }))}>
                 {branches.filter((branch) => branch.is_active).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
               </FormSelect>
@@ -277,7 +318,7 @@ export function UserManager({ users, branches, currentUser, busy, onSave }) {
 
       <div className="flex flex-col gap-3 md:flex-row">
         <label className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-hub-muted" size={17} aria-hidden="true" /><span className="sr-only">Search people</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search people" className="min-h-11 w-full border border-hub-line bg-white pl-10 pr-3 text-sm focus:border-hub-purple focus:outline-none focus:ring-2 focus:ring-hub-purple/15" /></label>
-        <label className="relative min-w-40"><span className="sr-only">Filter by role</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} className="min-h-11 w-full appearance-none border border-hub-line bg-white px-3 pr-9 text-sm focus:border-hub-purple focus:outline-none"><option value="">All roles</option>{Object.entries(ROLE_LABELS).filter(([role]) => role !== 'SUPER_ADMIN').map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-hub-muted" size={16} aria-hidden="true" /></label>
+        <label className="relative min-w-40"><span className="sr-only">Filter by role</span><select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)} className="min-h-11 w-full appearance-none border border-hub-line bg-white px-3 pr-9 text-sm focus:border-hub-purple focus:outline-none"><option value="">All roles</option>{Object.entries(ROLE_LABELS).filter(([role]) => isSuperAdmin || role !== 'SUPER_ADMIN').map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-hub-muted" size={16} aria-hidden="true" /></label>
         {isSuperAdmin && <label className="relative min-w-48"><span className="sr-only">Filter by branch</span><select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)} className="min-h-11 w-full appearance-none border border-hub-line bg-white px-3 pr-9 text-sm focus:border-hub-purple focus:outline-none"><option value="">All branches</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-hub-muted" size={16} aria-hidden="true" /></label>}
       </div>
 

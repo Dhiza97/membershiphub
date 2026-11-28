@@ -1,10 +1,14 @@
 import { useState } from 'react'
 import {
   ArrowRight,
+  BookOpen,
+  Building2,
   CalendarDays,
   CheckCircle2,
+  ChartNoAxesCombined,
   ClipboardList,
   GraduationCap,
+  ShieldCheck,
   UsersRound,
 } from 'lucide-react'
 import { calculateGraduationReport } from '../services/api.js'
@@ -14,7 +18,7 @@ const secondary = 'inline-flex min-h-9 items-center justify-center gap-2 border 
 const statusNames = { DRAFT: 'Draft', READY: 'Ready', ACTIVE: 'Active', COMPLETED: 'Completed', ARCHIVED: 'Archived' }
 
 function displayName(user) {
-  return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username
+  return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email || user.username
 }
 
 function formatDate(value, options = { weekday: 'short', month: 'short', day: 'numeric' }) {
@@ -116,10 +120,105 @@ function SessionRows({ sessions, query, onOpenSessions, canRecord = false }) {
   </div>
 }
 
+function SuperAdminDashboard({ snapshot, user, onNavigate, onOpenCohort, onOpenSessions }) {
+  const [branchFilter, setBranchFilter] = useState('')
+  const [query, setQuery] = useState('')
+  const selectedBranch = Number(branchFilter)
+  const cohorts = selectedBranch ? snapshot.cohorts.filter((cohort) => cohort.branch === selectedBranch) : snapshot.cohorts
+  const cohortIds = new Set(cohorts.map((cohort) => cohort.id))
+  const people = selectedBranch ? snapshot.users.filter((person) => person.branch === selectedBranch) : snapshot.users
+  const branches = selectedBranch ? snapshot.branches.filter((branch) => branch.id === selectedBranch) : snapshot.branches
+  const sessions = upcomingSessions(snapshot, cohorts)
+  const reports = getGraduationRows(snapshot, cohorts)
+  const attendance = getAttendanceSummary(snapshot, cohortIds)
+  const assessmentIds = new Set(snapshot.assessments.filter((assessment) => (
+    selectedBranch ? assessment.branch === selectedBranch : true
+  )).map((assessment) => assessment.id))
+  const pendingResults = snapshot.assessments.filter((assessment) => assessmentIds.has(assessment.id) && !assessment.results_released && snapshot.attempts.some((attempt) => attempt.assessment === assessment.id && ['SUBMITTED', 'TIMED_OUT'].includes(attempt.status)))
+  const draftCohorts = cohorts.filter((cohort) => cohort.status === 'DRAFT')
+  const withoutRequirements = cohorts.filter((cohort) => ['ACTIVE', 'COMPLETED'].includes(cohort.status) && !snapshot.graduationRequirements.some((requirement) => requirement.cohort === cohort.id))
+  const eligible = reports.filter((row) => row.eligibility === 'ELIGIBLE')
+  const search = query.trim().toLowerCase()
+  const visibleBranches = branches.filter((branch) => branch.name.toLowerCase().includes(search))
+  const visibleCohorts = cohorts.filter((cohort) => `${cohort.name} ${cohort.description ?? ''} ${snapshot.branches.find((branch) => branch.id === cohort.branch)?.name ?? ''}`.toLowerCase().includes(search))
+  const metrics = [
+    { label: 'Branches', value: branches.length, detail: `${branches.filter((branch) => branch.is_active).length} active` },
+    { label: 'Students', value: people.filter((person) => person.application_role === 'STUDENT').length },
+    { label: 'Instructors', value: people.filter((person) => person.application_role === 'INSTRUCTOR').length },
+    { label: 'Active cohorts', value: cohorts.filter((cohort) => cohort.status === 'ACTIVE').length, detail: `${cohorts.length} total` },
+    { label: 'Attendance', value: attendance.percentage == null ? '—' : `${attendance.percentage}%` },
+    { label: 'Eligible results', value: eligible.length, detail: 'Across cohort results' },
+  ]
+  const actions = [
+    { label: 'Branches', icon: Building2, view: 'branches' },
+    { label: 'People and roles', icon: UsersRound, view: 'users' },
+    { label: 'Cohorts', icon: GraduationCap, view: 'cohorts' },
+    { label: 'Curricula', icon: BookOpen, view: 'curricula' },
+    { label: 'Assessments', icon: ClipboardList, view: 'assessments' },
+    { label: 'Results', icon: ChartNoAxesCombined, view: 'results' },
+    { label: 'Account security', icon: ShieldCheck, view: 'security' },
+  ]
+
+  return <div className="space-y-7">
+    <header className="flex flex-wrap items-end justify-between gap-4 border-b border-hub-line pb-5">
+      <div><h1 className="text-2xl font-semibold">Organization overview</h1><p className="mt-1 text-sm text-hub-muted">{displayName(user)} · Super Admin</p></div>
+      <div className="grid w-full gap-3 sm:w-auto sm:grid-cols-[minmax(200px,1fr)_200px]">
+        <label className="text-xs font-semibold text-hub-muted">Search branches and cohorts<input className={input} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name" /></label>
+        <label className="text-xs font-semibold text-hub-muted">Branch<select className={input} value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}><option value="">All branches</option>{snapshot.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
+      </div>
+    </header>
+
+    <MetricStrip metrics={metrics} />
+
+    <section aria-labelledby="management-heading">
+      <h2 id="management-heading" className="mb-3 border-b border-hub-line pb-2 text-base font-semibold">Management</h2>
+      <div className="grid grid-cols-2 border-l border-t border-hub-line bg-white sm:grid-cols-3 xl:grid-cols-4">
+        {actions.map(({ label, icon: Icon, view }) => <button key={view} type="button" onClick={() => onNavigate(view)} className="flex min-h-14 items-center gap-2 border-b border-r border-hub-line px-3 text-left text-sm font-semibold hover:bg-[#fbf8fc] hover:text-hub-purple"><Icon size={17} className="shrink-0 text-hub-purple" aria-hidden="true" /><span className="min-w-0 flex-1">{label}</span><ArrowRight size={14} className="shrink-0 text-hub-muted" aria-hidden="true" /></button>)}
+      </div>
+    </section>
+
+    <div className="grid gap-8 xl:grid-cols-[minmax(0,1.3fr)_minmax(300px,.7fr)]">
+      <Section title="Branch performance" icon={Building2} action={<button type="button" className={secondary} onClick={() => onNavigate('branches')}>Manage branches <ArrowRight size={14} aria-hidden="true" /></button>}>
+        {visibleBranches.length ? <div className="divide-y divide-hub-line border-y border-hub-line bg-white">
+          {visibleBranches.map((branch) => {
+            const branchCohorts = cohorts.filter((cohort) => cohort.branch === branch.id)
+            const summary = getAttendanceSummary(snapshot, new Set(branchCohorts.map((cohort) => cohort.id)))
+            const students = new Set(branchCohorts.flatMap((cohort) => cohort.students)).size
+            return <div key={branch.id} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_100px_100px_100px] sm:items-center">
+              <div className="min-w-0"><p className="truncate text-sm font-semibold">{branch.name}</p><p className="mt-1 text-xs text-hub-muted">{branch.is_active ? 'Active' : 'Inactive'} · {branch.timezone}</p></div>
+              <p className="text-xs text-hub-muted"><strong className="text-hub-ink">{branchCohorts.length}</strong> cohort{branchCohorts.length === 1 ? '' : 's'}</p><p className="text-xs text-hub-muted"><strong className="text-hub-ink">{students}</strong> enrolled</p><p className="text-xs text-hub-muted"><strong className="text-hub-ink">{summary.percentage == null ? '—' : `${summary.percentage}%`}</strong> attendance</p>
+            </div>
+          })}
+        </div> : <EmptyLine>{snapshot.branches.length ? 'No branches match your search.' : 'No branches have been created yet.'}</EmptyLine>}
+      </Section>
+
+      <Section title="Needs attention" icon={CheckCircle2}>
+        <div className="divide-y divide-hub-line border-y border-hub-line bg-white">
+          {[
+            { label: 'Draft cohorts', count: draftCohorts.length, view: 'cohorts' },
+            { label: 'Assessments awaiting result release', count: pendingResults.length, view: 'assessments' },
+            { label: 'Active or completed cohorts without requirements', count: withoutRequirements.length, view: 'results' },
+          ].map((item) => <button type="button" key={item.label} onClick={() => onNavigate(item.view)} className="flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left hover:bg-[#fbf8fc]"><span className="min-w-0 flex-1 text-sm">{item.label}</span><strong className="text-sm tabular-nums">{item.count}</strong><ArrowRight size={15} className="shrink-0 text-hub-muted" aria-hidden="true" /></button>)}
+        </div>
+      </Section>
+    </div>
+
+    <div className="grid gap-8 xl:grid-cols-2">
+      <Section title="Cohorts" icon={GraduationCap} action={<button type="button" className={secondary} onClick={() => onNavigate('cohorts')}>All cohorts <ArrowRight size={14} aria-hidden="true" /></button>}>
+        {visibleCohorts.length ? <div className="divide-y divide-hub-line border-y border-hub-line bg-white">{visibleCohorts.slice(0, 6).map((cohort) => <button key={cohort.id} type="button" onClick={() => onOpenCohort(cohort.id)} className="grid min-h-14 w-full gap-1 px-4 py-3 text-left hover:bg-[#fbf8fc] sm:grid-cols-[minmax(0,1fr)_100px_80px] sm:items-center"><span className="min-w-0"><span className="block truncate text-sm font-semibold">{cohort.name}</span><span className="block truncate text-xs text-hub-muted">{snapshot.branches.find((branch) => branch.id === cohort.branch)?.name ?? 'Branch unavailable'}</span></span><span className="text-xs text-hub-muted">{statusNames[cohort.status] ?? cohort.status}</span><span className="text-xs text-hub-muted">{cohort.students.length} student{cohort.students.length === 1 ? '' : 's'}</span></button>)}</div> : <EmptyLine>{cohorts.length ? 'No cohorts match your search.' : 'No cohorts are available.'}</EmptyLine>}
+      </Section>
+      <Section title="Upcoming sessions" icon={CalendarDays}>
+        <SessionRows sessions={sessions} query={query} onOpenSessions={onOpenSessions} canRecord />
+      </Section>
+    </div>
+  </div>
+}
+
 export function DashboardScreen({ snapshot, user, onNavigate, onOpenCohort, onOpenSessions }) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const role = user.application_role
+  if (role === 'SUPER_ADMIN') return <SuperAdminDashboard snapshot={snapshot} user={user} onNavigate={onNavigate} onOpenCohort={onOpenCohort} onOpenSessions={onOpenSessions} />
   if (role === 'STUDENT') return <div className="space-y-7">
     <header className="border-b border-hub-line pb-5"><h1 className="text-2xl font-semibold">My learning dashboard</h1><p className="mt-1 text-sm text-hub-muted">{displayName(user)}</p></header>
     <MetricStrip metrics={[{ label: 'Assessments', value: snapshot.assessments.length }, { label: 'Certificates', value: snapshot.certificates.length }]} />

@@ -1,5 +1,5 @@
 export function displayName(user) {
-	return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username
+	return [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email || user.username
 }
 
 export function roleName(role) {

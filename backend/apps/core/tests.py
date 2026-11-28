@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import Client, TestCase
 from django.utils import timezone
@@ -60,6 +61,17 @@ class AssessmentAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         token = client.cookies["csrftoken"].value
         self.assertEqual(client.post("/api/accounts/logout/", HTTP_X_CSRFTOKEN=token).status_code, 204)
+
+    def test_logout_accepts_matching_browser_origin_and_rejects_other_origins(self):
+        client = Client(enforce_csrf_checks=True, HTTP_HOST="testserver:5173")
+        client.force_login(self.instructor)
+        token = client.get("/api/health/").cookies["csrftoken"].value
+        rejected = client.post("/api/accounts/logout/", HTTP_X_CSRFTOKEN=token, HTTP_ORIGIN="http://other.example")
+        self.assertEqual(rejected.status_code, 403)
+        self.assertTrue(client.get("/api/accounts/me/").json()["id"] == self.instructor.pk)
+        accepted = client.post("/api/accounts/logout/", HTTP_X_CSRFTOKEN=token, HTTP_ORIGIN="http://testserver:5173")
+        self.assertEqual(accepted.status_code, 204)
+        self.assertIn(client.get("/api/accounts/me/").status_code, (401, 403))
 
     def published_assessment(self, timing_mode=Assessment.TimingMode.WHOLE, count=1):
         bank = QuestionBank.objects.create(branch=self.branch)
@@ -231,7 +243,7 @@ class CertificateAPITests(APITestCase):
             application_role=User.ApplicationRole.STUDENT,
             branch=self.branch,
         )
-        instructor = User.objects.create_user(
+        self.instructor = User.objects.create_user(
             username="certificate-instructor",
             application_role=User.ApplicationRole.INSTRUCTOR,
             branch=self.branch,
@@ -239,7 +251,7 @@ class CertificateAPITests(APITestCase):
         self.cohort = Cohort.objects.create(
             branch=self.branch,
             name="Certificate cohort",
-            instructor=instructor,
+            instructor=self.instructor,
         )
         Enrollment.objects.create(cohort=self.cohort, student=self.student)
         session = Session.objects.create(
@@ -286,64 +298,67 @@ class CertificateAPITests(APITestCase):
     def certificate_path(self):
         return f"/api/cohorts/{self.cohort.pk}/certificates/"
 
-    def test_only_eligible_students_receive_immutable_certificates_once(self):
-        response = self.client.post(self.certificate_path(), {"student_ids": [self.student.pk]}, format="json")
+    def upload(self, student_id=None, content=b"%PDF-1.4\n%%EOF\n"):
+        return self.client.post(self.certificate_path(), {
+            "student": student_id or self.student.pk,
+            "file": SimpleUploadedFile("certificate.pdf", content, content_type="application/pdf"),
+        }, format="multipart")
+
+    def test_instructor_can_upload_for_enrolled_student_without_requirements(self):
+        GraduationRequirements.objects.filter(cohort=self.cohort).delete()
+        self.client.force_login(self.instructor)
+        response = self.upload()
         self.assertEqual(response.status_code, 201, response.json())
-        self.assertEqual(response.json()["issued"], 1)
         certificate = Certificate.objects.get(cohort=self.cohort, student=self.student)
         self.assertEqual(certificate.student_name, "Amina Mensah")
-        certificate_number = cast(str, certificate.certificate_number)
-        self.assertTrue(certificate_number.startswith("MH-2026-"))
-        self.assertEqual(response.json()["certificates"][0]["certificate_number"], certificate.certificate_number)
-
-        repeated = self.client.post(self.certificate_path(), {"student_ids": [self.student.pk]}, format="json")
-        self.assertEqual(repeated.status_code, 200, repeated.json())
-        self.assertEqual(repeated.json()["issued"], 0)
-        self.assertEqual(repeated.json()["already_issued"], 1)
-        self.assertEqual(Certificate.objects.filter(cohort=self.cohort, student=self.student).count(), 1)
-
+        self.assertTrue(response.json()["has_uploaded_pdf"])
+        self.assertIsNone(response.json()["verification_url"])
+        self.assertEqual(self.client.get(self.certificate_path()).status_code, 200)
+        self.assertEqual(self.upload().status_code, 400)
         with self.assertRaises(DjangoValidationError):
             certificate.delete()
 
-    def test_pdf_download_is_owner_scoped_and_verification_is_public(self):
-        issued = self.client.post(self.certificate_path(), {"student_ids": [self.student.pk]}, format="json")
-        certificate = Certificate.objects.get(pk=issued.json()["certificates"][0]["id"])
-
+    def test_uploaded_pdf_download_is_scoped(self):
+        response = self.upload()
+        self.assertEqual(response.status_code, 201, response.json())
+        certificate = Certificate.objects.get(pk=response.json()["id"])
         self.client.force_login(self.student)
+        self.assertEqual(len(self.client.get("/api/student/certificates/").json()), 1)
         download = self.client.get(f"/api/certificates/{certificate.pk}/download/")
         self.assertEqual(download.status_code, 200)
         self.assertEqual(download["Content-Type"], "application/pdf")
-        self.assertTrue(b"".join(getattr(download, "streaming_content")).startswith(b"%PDF-"))
-
-        outsider = User.objects.create_user(
-            username="certificate-outsider",
-            application_role=User.ApplicationRole.STUDENT,
-            branch=self.branch,
-        )
+        self.assertEqual(b"".join(getattr(download, "streaming_content")), b"%PDF-1.4\n%%EOF\n")
+        self.client.force_login(self.instructor)
+        self.assertEqual(self.client.get(f"/api/certificates/{certificate.pk}/download/").status_code, 200)
+        outsider = User.objects.create_user(username="certificate-outsider", application_role=User.ApplicationRole.STUDENT, branch=self.branch)
         self.client.force_login(outsider)
         self.assertEqual(self.client.get(f"/api/certificates/{certificate.pk}/download/").status_code, 403)
-
         self.client.logout()
-        verification = self.client.get(f"/api/certificates/verify/{certificate.verification_code}/")
-        self.assertEqual(verification.status_code, 200, verification.json())
-        self.assertTrue(verification.json()["valid"])
-        self.assertEqual(verification.json()["recipient_name"], "Amina Mensah")
-        self.assertNotIn("assessment_average", verification.json())
-        self.assertEqual(self.client.get(f"/api/certificates/verify/{'0' * 8}-0000-0000-0000-000000000000/").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/certificates/verify/{certificate.verification_code}/").status_code, 404)
 
-    def test_ineligible_student_and_non_manager_cannot_issue(self):
-        other_student = User.objects.create_user(
-            username="ineligible-student",
-            application_role=User.ApplicationRole.STUDENT,
-            branch=self.branch,
-        )
-        Enrollment.objects.create(cohort=self.cohort, student=other_student)
-        response = self.client.post(self.certificate_path(), {"student_ids": [other_student.pk]}, format="json")
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(Certificate.objects.filter(student=other_student).exists())
-
+    def test_upload_rejects_invalid_file_unenrolled_student_and_other_roles(self):
+        self.assertEqual(self.upload(content=b"not a PDF").status_code, 400)
+        self.assertEqual(self.upload(content=b"%PDF-" + b"x" * (10 * 1024 * 1024)).status_code, 400)
+        outsider = User.objects.create_user(username="unenrolled", application_role=User.ApplicationRole.STUDENT, branch=self.branch)
+        self.assertEqual(self.upload(student_id=outsider.pk).status_code, 400)
         self.client.force_login(self.student)
-        self.assertEqual(self.client.post(self.certificate_path()).status_code, 403)
+        self.assertEqual(self.upload().status_code, 403)
+        other_instructor = User.objects.create_user(username="other-instructor", application_role=User.ApplicationRole.INSTRUCTOR, branch=self.branch)
+        self.client.force_login(other_instructor)
+        self.assertEqual(self.upload().status_code, 404)
+
+    def test_legacy_generated_certificates_remain_downloadable_and_verifiable(self):
+        certificate = Certificate.objects.create(
+            cohort=self.cohort, student=self.student, student_name="Amina Mensah", cohort_name=self.cohort.name,
+            branch_name=self.branch.name, attendance_percentage=90, assessment_average=90,
+            minimum_attendance=80, minimum_assessment_score=70, issued_by=self.admin,
+        )
+        self.client.force_login(self.student)
+        response = self.client.get(f"/api/certificates/{certificate.pk}/download/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(b"".join(getattr(response, "streaming_content")).startswith(b"%PDF-"))
+        self.client.logout()
+        self.assertEqual(self.client.get(f"/api/certificates/verify/{certificate.verification_code}/").status_code, 200)
 
 
 class GraduationResultsAPITests(APITestCase):

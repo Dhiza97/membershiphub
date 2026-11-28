@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import { api } from './api.js'
+import viteConfig from '../../vite.config.js'
 
 const originalFetch = globalThis.fetch
 const originalDocument = globalThis.document
@@ -13,6 +14,10 @@ afterEach(() => {
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 }
+
+test('development proxy preserves the browser host for CSRF origin checks', () => {
+  assert.equal(viteConfig.server.proxy['/api'].changeOrigin, false)
+})
 
 test('sign in uses CSRF and loads only the student endpoints', async () => {
   const calls = []
@@ -57,4 +62,18 @@ test('session creation omits an unset status and refreshes server data', async (
   const result = await api.saveSession({ cohort: 1, title: 'Meeting', status: null })
   assert.equal('status' in posted, false)
   assert.equal(result.attendanceReports[0].cohort.id, 1)
+})
+
+test('password changes use the authenticated CSRF-protected endpoint', async () => {
+  let captured
+  globalThis.document = { cookie: 'csrftoken=test-token' }
+  globalThis.fetch = async (path, options) => {
+    captured = { path, ...options }
+    return json({ detail: 'Password changed successfully.' })
+  }
+  await api.changePassword({ old_password: 'old-password', new_password: 'new-password' })
+  assert.equal(captured.path, '/api/accounts/password/change/')
+  assert.equal(captured.method, 'POST')
+  assert.equal(captured.headers['X-CSRFToken'], 'test-token')
+  assert.deepEqual(JSON.parse(captured.body), { old_password: 'old-password', new_password: 'new-password' })
 })
